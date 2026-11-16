@@ -15,7 +15,6 @@ services:
     plan: free
     region: oregon
     buildCommand: npm ci && npm run build
-    preDeployCommand: npm run db:migrate
     startCommand: npm run db:migrate && node build
     healthCheckPath: /health
     envVars:

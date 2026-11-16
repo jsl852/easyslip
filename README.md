@@ -99,7 +99,7 @@ Do not commit `.env` or real keys. `.env.example` has placeholders only.
 
 `render.yaml` describes a free web service and a free Postgres database in Oregon. It is not deployed by this repository. Free Postgres expires 30 days after creation, and a free web service sleeps after 15 minutes without traffic. Uploaded files and workbooks are stored in Postgres, because the web service disk is ephemeral.
 
-On first Blueprint setup, fill in `AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and optionally `XAI_API_KEY`. `AUTH_SECRET` is generated. `DATABASE_URL` comes from the database. The release command runs `npm run db:migrate` before the new instance starts.
+On first Blueprint setup, fill in `AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and optionally `XAI_API_KEY`. `AUTH_SECRET` is generated. `DATABASE_URL` comes from the database. The start command runs `npm run db:migrate` before the app listens. Render's free plan does not support a pre-deploy command.
 
 Set the Google redirect URI to `https://<your-service>.onrender.com/auth/callback/google`.
 
