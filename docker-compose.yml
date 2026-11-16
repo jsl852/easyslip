@@ -1,0 +1,14 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: easyslip
+      POSTGRES_PASSWORD: easyslip
+      POSTGRES_DB: easyslip
+    ports:
+      - "5432:5432"
+    volumes:
+      - easyslip_pg:/var/lib/postgresql/data
+
+volumes:
+  easyslip_pg:
