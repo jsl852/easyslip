@@ -1,10 +1,11 @@
 import { and, asc, eq, lt } from "drizzle-orm";
+import { classifyDocument } from "$lib/accounting/expense-group";
 import { planReceiptSplit } from "$lib/accounting/receipt-layout";
 import type { TxnType } from "$lib/accounting/types";
-import { postFromExtraction } from "./books";
 import { getDb } from "./db/client";
-import { categories, documents } from "./db/schema";
+import { categories, receipts } from "./db/schema";
 import { markReceiptsUnseparated, saveReceiptCrops } from "./documents";
+import { settleExtractedReceipt } from "./grouping";
 import { BooksError } from "./errors";
 import { loadStoredBytes, objectStorage } from "./object-store";
 import { cropReceiptBoxes, prepareReceiptImage } from "./receipt-crop";
@@ -30,87 +31,86 @@ async function runQueue(companyId: string): Promise<void> {
   const db = getDb();
   const stale = new Date(Date.now() - 15 * 60 * 1000);
   await db
-    .update(documents)
+    .update(receipts)
     .set({ status: "queued", updatedAt: new Date() })
-    .where(and(eq(documents.companyId, companyId), eq(documents.status, "processing"), lt(documents.updatedAt, stale)));
+    .where(and(eq(receipts.companyId, companyId), eq(receipts.status, "processing"), lt(receipts.updatedAt, stale)));
 
   for (let index = 0; index < 40; index += 1) {
     const [next] = await db
-      .select({ id: documents.id })
-      .from(documents)
-      .where(and(eq(documents.companyId, companyId), eq(documents.status, "queued")))
-      .orderBy(asc(documents.createdAt))
+      .select({ id: receipts.id })
+      .from(receipts)
+      .where(and(eq(receipts.companyId, companyId), eq(receipts.status, "queued")))
+      .orderBy(asc(receipts.createdAt))
       .limit(1);
     if (!next) return;
     const claimed = await db
-      .update(documents)
+      .update(receipts)
       .set({ status: "processing", updatedAt: new Date(), error: null })
-      .where(and(eq(documents.id, next.id), eq(documents.status, "queued")))
+      .where(and(eq(receipts.id, next.id), eq(receipts.status, "queued")))
       .returning();
-    const document = claimed[0];
-    if (!document) continue;
+    const receipt = claimed[0];
+    if (!receipt) continue;
     try {
-      await processDocument(document);
+      await processReceipt(receipt);
     } catch (error) {
       const message = error instanceof BooksError ? error.message : "Extraction failed before a journal entry could be posted.";
       await db
-        .update(documents)
+        .update(receipts)
         .set({ status: "failed", error: message, updatedAt: new Date(), processedAt: new Date() })
-        .where(eq(documents.id, document.id));
+        .where(eq(receipts.id, receipt.id));
     }
   }
 }
 
-async function processDocument(document: typeof documents.$inferSelect): Promise<void> {
+async function processReceipt(receipt: typeof receipts.$inferSelect): Promise<void> {
   const db = getDb();
   const categoryRows = await db
     .select({ name: categories.name })
     .from(categories)
-    .where(and(eq(categories.companyId, document.companyId), eq(categories.active, true)));
+    .where(and(eq(categories.companyId, receipt.companyId), eq(categories.active, true)));
   const bytes = await loadStoredBytes(
-    { fileData: document.fileData, storageKey: document.storageKey },
-    document.storageKey ? objectStorage() : null
+    { fileData: receipt.fileData, storageKey: receipt.storageKey },
+    receipt.storageKey ? objectStorage() : null
   );
   let detectionWarning: string | null = null;
-  if (!document.parentDocumentId && IMAGE_TYPES.has(document.mimeType)) {
-    const separated = await separateReceipts(db, document, bytes);
+  if (!receipt.parentReceiptId && IMAGE_TYPES.has(receipt.mimeType)) {
+    const separated = await separateReceipts(db, receipt, bytes);
     if (separated === "done") return;
     detectionWarning = separated;
   }
   const extract = await extractDocument({
-    fileName: document.fileName,
-    mimeType: document.mimeType,
+    fileName: receipt.fileName,
+    mimeType: receipt.mimeType,
     bytes,
-    txnType: document.txnType as TxnType,
+    txnType: receipt.txnType as TxnType,
     categories: categoryRows.map((row) => row.name)
   });
   if (detectionWarning) extract.warnings = [...extract.warnings, detectionWarning].slice(0, 8);
+  const documentKind = classifyDocument(`${extract.merchant} ${extract.description}`);
   await db.transaction(async (tx) => {
-    await postFromExtraction(tx, {
-      companyId: document.companyId,
-      userId: document.uploadedBy,
-      documentId: document.id,
-      txnType: document.txnType as TxnType,
-      settlementAccountId: document.settlementAccountId,
-      extract
-    });
     await tx
-      .update(documents)
+      .update(receipts)
       .set({
         status: "extracted",
+        documentKind,
         extractionSource: extract.source,
         rawExtract: extract,
         error: null,
         updatedAt: new Date(),
         processedAt: new Date()
       })
-      .where(eq(documents.id, document.id));
+      .where(eq(receipts.id, receipt.id));
+    await settleExtractedReceipt(tx, {
+      companyId: receipt.companyId,
+      receiptId: receipt.id,
+      userId: receipt.uploadedBy
+    });
   });
 }
 
 async function separateReceipts(
   db: ReturnType<typeof getDb>,
-  document: typeof documents.$inferSelect,
+  document: typeof receipts.$inferSelect,
   bytes: Buffer
 ): Promise<"done" | string | null> {
   let prepared;

@@ -11,8 +11,8 @@ Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-comp
 1. Sign in with Google. A local development sign-in is available only when you turn it on.
 2. Create one company. EasySlip seeds a Hong Kong chart of accounts, categories, and a few starter keyword rules.
 3. Upload up to 20 PDFs or images at a time, marked as an expense, purchase, or sale, against a bank, cash, card, or staff cash band.
-4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. A photo that shows more than one physical slip is separated first, and each slip becomes its own document. If the edges are not clear enough to crop, the original photo stays in the list and says how many slips were found, instead of merging them into one entry. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
-5. Correct the date, amount, category, and settlement account. Saving rewrites the journal lines. Approving removes the row from the review queue.
+4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. A photo that shows more than one physical slip is separated first, and each slip stays its own receipt image. Receipts that are clearly the same purchase (above 90% confidence: same amount and currency, a close date, an overlapping merchant, and complementary documents such as an itemized bill plus a card slip) are grouped onto one expense and one journal entry. A weaker match is left as two expenses with a suggestion to merge. If the edges are not clear enough to crop, the original photo stays in the list and says how many slips were found. Nothing is dropped. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
+5. Correct the date, amount, category, and settlement account. Saving rewrites that expense's journal lines. You can attach another receipt, merge two expenses, or split a receipt back onto its own expense. Approving removes the expense from the review queue.
 6. Maintain the chart, categories, keyword rules, and opening balances.
 7. Preview a period and download an Excel workbook. `JL` holds values. Account sheets, `SJ` / `PJ` / `EJ`, `TB`, `BS`, and `PL` use formulas. Yellow opening cells on `TB` are editable so a migrated balance can be adjusted in the sheet. Documents outside the period stay in the database and are left out of the file.
 
@@ -103,7 +103,7 @@ Do not commit `.env` or real keys. `.env.example` has placeholders only.
 
 ## On a phone
 
-Sign in, create the company, then take a receipt photo or choose one from the library. A large photo is compressed in the browser before it uploads, and the whole frame is kept so two slips in one picture can still be split. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipts, and each one can be previewed. When reading finishes, open the preview, correct the line, and approve it.
+Sign in, create the company, then take a receipt photo or choose one from the library. A large photo is compressed in the browser before it uploads, and the whole frame is kept so two slips in one picture can still be split. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipt images. When they are the same purchase, EasySlip books one expense and shows both images on it. When reading finishes, open that expense, correct the line, and approve it.
 
 ### Add to the Home Screen
 
@@ -139,8 +139,8 @@ When `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`
 
 Create an AWS bucket with Block Public Access on, ACLs disabled, and default encryption on. Give the IAM user only `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/companies/*`. `DeleteObject` is used to remove an object if the database row cannot be saved. Do not add a bucket policy that allows `Principal: "*"`. For R2, create a private bucket and an API token that can read, write, and delete objects in that bucket. Do not enable the r2.dev public URL.
 
-When the four variables are unset, new files are stored in Postgres. That is the local default. Set all four, or none. A partial set fails the next upload instead of quietly using the database. Files already stored in Postgres stay there and remain readable after object storage is turned on. The migration adds `storage_key` and lets `documents.file_data` be null when the bytes live in the bucket.
+When the four variables are unset, new files are stored in Postgres. That is the local default. Set all four, or none. A partial set fails the next upload instead of quietly using the database. Receipt bytes live on the private `receipts` row (`file_data` or `storage_key`, never both). Preview stays on the signed-in route `/app/documents/:id/file`.
 
 ## Stack
 
-SvelteKit, TypeScript, PostgreSQL, Drizzle, Auth.js with Google OIDC, and ExcelJS. Extraction uses xAI when `XAI_API_KEY` is present. Processing runs in the web process and resumes queued documents on the next workspace request, which fits a single free instance.
+SvelteKit, TypeScript, PostgreSQL, Drizzle, Auth.js with Google OIDC, and ExcelJS. Extraction uses xAI when `XAI_API_KEY` is present. Processing runs in the web process and resumes queued receipts on the next workspace request, which fits a single free instance.

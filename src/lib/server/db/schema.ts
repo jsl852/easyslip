@@ -131,8 +131,8 @@ export const keywordRules = pgTable(
   (table) => [index("keyword_rules_company_idx").on(table.companyId)]
 );
 
-export const documents = pgTable(
-  "documents",
+export const expenses = pgTable(
+  "expenses",
   {
     id: text("id")
       .primaryKey()
@@ -140,48 +140,6 @@ export const documents = pgTable(
     companyId: text("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    uploadedBy: text("uploaded_by").references(() => users.id, { onDelete: "set null" }),
-    batchId: text("batch_id").notNull(),
-    parentDocumentId: text("parent_document_id").references((): AnyPgColumn => documents.id, { onDelete: "set null" }),
-    fileName: text("file_name").notNull(),
-    mimeType: text("mime_type").notNull(),
-    byteSize: integer("byte_size").notNull(),
-    fileData: bytea("file_data"),
-    storageKey: text("storage_key"),
-    source: text("source").notNull().default("upload"),
-    status: text("status").notNull().default("queued"),
-    txnType: text("txn_type").notNull(),
-    settlementAccountId: text("settlement_account_id")
-      .notNull()
-      .references(() => accounts.id, { onDelete: "restrict" }),
-    extractionSource: text("extraction_source"),
-    rawExtract: jsonb("raw_extract"),
-    error: text("error"),
-    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
-    processedAt: timestamp("processed_at", { withTimezone: true, mode: "date" })
-  },
-  (table) => [
-    index("documents_company_status_idx").on(table.companyId, table.status),
-    index("documents_company_created_idx").on(table.companyId, table.createdAt),
-    index("documents_parent_idx").on(table.parentDocumentId),
-    check(
-      "documents_file_stored_check",
-      sql`(${table.fileData} IS NOT NULL AND ${table.storageKey} IS NULL) OR (${table.fileData} IS NULL AND ${table.storageKey} IS NOT NULL)`
-    )
-  ]
-);
-
-export const transactions = pgTable(
-  "transactions",
-  {
-    id: text("id")
-      .primaryKey()
-      .$defaultFn(() => crypto.randomUUID()),
-    companyId: text("company_id")
-      .notNull()
-      .references(() => companies.id, { onDelete: "cascade" }),
-    documentId: text("document_id").references(() => documents.id, { onDelete: "set null" }),
     type: text("type").notNull(),
     settlementAccountId: text("settlement_account_id")
       .notNull()
@@ -196,6 +154,7 @@ export const transactions = pgTable(
     currency: text("currency").notNull().default("HKD"),
     originalAmount: numeric("original_amount", { precision: 14, scale: 2 }),
     originalCurrency: text("original_currency"),
+    paymentMethod: text("payment_method"),
     aiConfidence: numeric("ai_confidence", { precision: 4, scale: 3 }),
     extractionSource: text("extraction_source").notNull().default("manual"),
     warnings: jsonb("warnings")
@@ -203,16 +162,90 @@ export const transactions = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     reviewStatus: text("review_status").notNull().default("needs_review"),
+    groupConfidence: numeric("group_confidence", { precision: 4, scale: 3 }),
     createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
     updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
   (table) => [
-    index("transactions_company_review_idx").on(table.companyId, table.reviewStatus),
-    index("transactions_company_type_idx").on(table.companyId, table.type),
-    index("transactions_company_date_idx").on(table.companyId, table.txnDate),
-    index("transactions_document_idx").on(table.documentId)
+    index("expenses_company_review_idx").on(table.companyId, table.reviewStatus),
+    index("expenses_company_type_idx").on(table.companyId, table.type),
+    index("expenses_company_date_idx").on(table.companyId, table.txnDate)
+  ]
+);
+
+export const receipts = pgTable(
+  "receipts",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    expenseId: text("expense_id").references(() => expenses.id, { onDelete: "set null" }),
+    uploadedBy: text("uploaded_by").references(() => users.id, { onDelete: "set null" }),
+    batchId: text("batch_id").notNull(),
+    parentReceiptId: text("parent_receipt_id").references((): AnyPgColumn => receipts.id, { onDelete: "set null" }),
+    fileName: text("file_name").notNull(),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    fileData: bytea("file_data"),
+    storageKey: text("storage_key"),
+    source: text("source").notNull().default("upload"),
+    status: text("status").notNull().default("queued"),
+    documentKind: text("document_kind"),
+    role: text("role"),
+    txnType: text("txn_type").notNull(),
+    settlementAccountId: text("settlement_account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "restrict" }),
+    extractionSource: text("extraction_source"),
+    rawExtract: jsonb("raw_extract"),
+    error: text("error"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
+    processedAt: timestamp("processed_at", { withTimezone: true, mode: "date" })
+  },
+  (table) => [
+    index("receipts_company_status_idx").on(table.companyId, table.status),
+    index("receipts_company_created_idx").on(table.companyId, table.createdAt),
+    index("receipts_expense_idx").on(table.expenseId),
+    index("receipts_batch_idx").on(table.companyId, table.batchId),
+    index("receipts_parent_idx").on(table.parentReceiptId),
+    check(
+      "receipts_file_stored_check",
+      sql`(${table.fileData} IS NOT NULL AND ${table.storageKey} IS NULL) OR (${table.fileData} IS NULL AND ${table.storageKey} IS NOT NULL)`
+    )
+  ]
+);
+
+export const expenseRelations = pgTable(
+  "expense_relations",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    companyId: text("company_id")
+      .notNull()
+      .references(() => companies.id, { onDelete: "cascade" }),
+    expenseId: text("expense_id")
+      .notNull()
+      .references(() => expenses.id, { onDelete: "cascade" }),
+    relatedExpenseId: text("related_expense_id")
+      .notNull()
+      .references(() => expenses.id, { onDelete: "cascade" }),
+    confidence: numeric("confidence", { precision: 4, scale: 3 }).notNull(),
+    reason: text("reason").notNull(),
+    status: text("status").notNull().default("suggested"),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex("expense_relations_pair_unique").on(table.companyId, table.expenseId, table.relatedExpenseId),
+    index("expense_relations_expense_idx").on(table.expenseId),
+    index("expense_relations_related_idx").on(table.relatedExpenseId),
+    check("expense_relations_distinct_check", sql`${table.expenseId} <> ${table.relatedExpenseId}`)
   ]
 );
 
@@ -225,9 +258,9 @@ export const journalLines = pgTable(
     companyId: text("company_id")
       .notNull()
       .references(() => companies.id, { onDelete: "cascade" }),
-    transactionId: text("transaction_id")
+    expenseId: text("expense_id")
       .notNull()
-      .references(() => transactions.id, { onDelete: "cascade" }),
+      .references(() => expenses.id, { onDelete: "cascade" }),
     docTypeCode: text("doc_type_code").notNull(),
     lineDate: date("line_date", { mode: "string" }).notNull(),
     description: text("description").notNull(),
@@ -241,7 +274,7 @@ export const journalLines = pgTable(
   },
   (table) => [
     index("journal_lines_company_date_idx").on(table.companyId, table.lineDate),
-    index("journal_lines_transaction_idx").on(table.transactionId)
+    index("journal_lines_expense_idx").on(table.expenseId)
   ]
 );
 

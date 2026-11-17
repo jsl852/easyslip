@@ -2,7 +2,7 @@ import { fail } from "@sveltejs/kit";
 import { txnTypes, type TxnType } from "$lib/accounting/types";
 import { listAccounts } from "$lib/server/books";
 import { getDb } from "$lib/server/db/client";
-import { listDocuments, retryDocument, saveBatch } from "$lib/server/documents";
+import { listUploadFeed, retryDocument, saveBatch } from "$lib/server/documents";
 import { publicError } from "$lib/server/errors";
 import { enqueueExtraction } from "$lib/server/queue";
 import { workspaceOf } from "$lib/server/workspace";
@@ -12,10 +12,10 @@ export const load: PageServerLoad = async ({ locals }) => {
   const workspace = workspaceOf(locals);
   const db = getDb();
   const accounts = await listAccounts(db, workspace.company.id);
-  const documents = await listDocuments(db, workspace.company.id);
+  const items = await listUploadFeed(db, workspace.company.id);
   return {
     accounts: accounts.filter((account) => account.active && account.isSettlement),
-    documents
+    items
   };
 };
 
@@ -36,7 +36,7 @@ export const actions: Actions = {
         files
       });
       enqueueExtraction(workspace.company.id);
-      return { message: `Queued ${saved.count} document${saved.count === 1 ? "" : "s"}. You can keep working while they are read.` };
+      return { message: `Queued ${saved.count} receipt${saved.count === 1 ? "" : "s"}. Slips from the same purchase are booked as one expense.` };
     } catch (error) {
       return fail(400, { message: publicError(error, "The batch could not be saved.") });
     }
@@ -47,7 +47,7 @@ export const actions: Actions = {
     try {
       await retryDocument(getDb(), workspace.company.id, id);
       enqueueExtraction(workspace.company.id);
-      return { message: "Document queued again." };
+      return { message: "Receipt queued again." };
     } catch (error) {
       return fail(400, { message: publicError(error, "Could not retry that document.") });
     }

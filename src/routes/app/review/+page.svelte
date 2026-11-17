@@ -13,12 +13,12 @@
 <div class="page-head">
   <div>
     <h1>Review</h1>
-    <p class="sub">Every extracted or manual entry starts here. Approving it keeps the journal lines and marks the row as reviewed.</p>
+    <p class="sub">Every expense starts here. Approving it keeps the single journal entry and marks the expense as reviewed.</p>
   </div>
 </div>
 
 {#if data.queued > 0}
-  <p class="callout">{data.queued} document{data.queued === 1 ? " is" : "s are"} still being read. <a href="/app/upload">Watch the batch</a>.</p>
+  <p class="callout">{data.queued} receipt{data.queued === 1 ? " is" : "s are"} still being read. <a href="/app/upload">Watch the batch</a>.</p>
 {/if}
 
 {#if data.queue.length === 0}
@@ -32,7 +32,7 @@
           <b class="money">{formatDecimal(row.amount)}</b>
         </div>
         <a class="file-name" href={`/app/transactions/${row.id}`}>{row.description}</a>
-        <p class="sub">{formatIsoDate(row.txnDate)} · {row.type} · {row.categoryName}</p>
+        <p class="sub">{formatIsoDate(row.txnDate)} · {row.type} · {row.categoryName}{#if row.receiptCount > 1} · {row.receiptCount} receipts{/if}</p>
         <a class="button" href={`/app/transactions/${row.id}`}>Open preview</a>
       </article>
     {/each}

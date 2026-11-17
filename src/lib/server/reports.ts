@@ -36,7 +36,7 @@ export async function loadLedger(db: QueryClient, companyId: string, periodFrom:
       credit: journalLines.credit,
       docType: journalLines.docTypeCode,
       description: journalLines.description,
-      transactionId: journalLines.transactionId,
+      expenseId: journalLines.expenseId,
       accountCode: accounts.code,
       accountName: accounts.name,
       categoryName: categories.name
@@ -45,7 +45,7 @@ export async function loadLedger(db: QueryClient, companyId: string, periodFrom:
     .innerJoin(accounts, eq(journalLines.accountId, accounts.id))
     .leftJoin(categories, eq(journalLines.categoryId, categories.id))
     .where(and(eq(journalLines.companyId, companyId), lte(journalLines.lineDate, periodTo)))
-    .orderBy(asc(journalLines.lineDate), asc(journalLines.transactionId), asc(journalLines.sortOrder));
+    .orderBy(asc(journalLines.lineDate), asc(journalLines.expenseId), asc(journalLines.sortOrder));
 
   const ledger: LedgerAccount[] = accountRows.map((account) => ({
     id: account.id,
@@ -78,7 +78,7 @@ export async function loadLedger(db: QueryClient, companyId: string, periodFrom:
       debitCents: toCents(row.debit),
       creditCents: toCents(row.credit),
       category: row.categoryName ?? "",
-      transactionId: row.transactionId
+      transactionId: row.expenseId
     }));
   return { statements, journal };
 }

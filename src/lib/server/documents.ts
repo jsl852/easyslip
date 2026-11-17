@@ -2,8 +2,9 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { receiptSplitCount, splitReceiptFileName, type ReceiptBox } from "$lib/accounting/receipt-layout";
 import type { TxnType } from "$lib/accounting/types";
+import { foldUploadFeed, type UploadExpenseFields, type UploadFeedRow, type UploadReceiptCard } from "$lib/accounting/upload-feed";
 import { type Database, type QueryClient } from "./db/client";
-import { documents, transactions } from "./db/schema";
+import { expenses, receipts } from "./db/schema";
 import { BooksError } from "./errors";
 import { cleanFileName, MAX_BATCH, MAX_FILE_BYTES, sniffMime } from "./files";
 import {
@@ -18,11 +19,26 @@ import {
 
 export async function saveBatch(
   db: QueryClient,
-  input: { companyId: string; userId: string; txnType: TxnType; settlementAccountId: string; files: File[] },
+  input: {
+    companyId: string;
+    userId: string;
+    txnType: TxnType;
+    settlementAccountId: string;
+    files: File[];
+    expenseId?: string | null;
+  },
   storage: ObjectStorage | null = objectStorage()
 ) {
   if (input.files.length === 0) throw new BooksError("Choose at least one PDF or image.");
   if (input.files.length > MAX_BATCH) throw new BooksError(`Upload up to ${MAX_BATCH} files at a time.`);
+  if (input.expenseId) {
+    const [expense] = await db
+      .select({ id: expenses.id })
+      .from(expenses)
+      .where(and(eq(expenses.id, input.expenseId), eq(expenses.companyId, input.companyId)))
+      .limit(1);
+    if (!expense) throw new BooksError("Expense not found.");
+  }
   const batchId = crypto.randomUUID();
   const prepared = [];
   for (const file of input.files) {
@@ -32,7 +48,7 @@ export async function saveBatch(
     if (!mimeType) throw new BooksError(`${file.name} is not a PDF, JPEG, PNG, GIF, or WebP.`);
     prepared.push({
       id: crypto.randomUUID(),
-      fileName: cleanFileName(file.name || "document"),
+      fileName: cleanFileName(file.name || "receipt"),
       mimeType,
       bytes
     });
@@ -50,6 +66,7 @@ export async function saveBatch(
       rows.push({
         id: item.id,
         companyId: input.companyId,
+        expenseId: input.expenseId ?? null,
         uploadedBy: input.userId,
         batchId,
         fileName: item.fileName,
@@ -63,8 +80,8 @@ export async function saveBatch(
         settlementAccountId: input.settlementAccountId
       });
     }
-    await db.insert(documents).values(rows);
-    return { batchId, count: rows.length };
+    await db.insert(receipts).values(rows);
+    return { batchId, count: rows.length, expenseId: input.expenseId ?? null };
   } catch (error) {
     if (storage && uploaded.length > 0) await deleteStoredKeys(storage, uploaded);
     throw error;
@@ -89,9 +106,9 @@ export async function saveReceiptCrops(
     throw new BooksError("Each detected receipt needs its own crop.");
   }
   const existing = await db
-    .select({ id: documents.id })
-    .from(documents)
-    .where(eq(documents.parentDocumentId, input.parentId));
+    .select({ id: receipts.id })
+    .from(receipts)
+    .where(eq(receipts.parentReceiptId, input.parentId));
   if (existing.length > 0) {
     await markReceiptSplit(db, input.parentId, existing.length, []);
     return { count: existing.length };
@@ -106,7 +123,7 @@ export async function saveReceiptCrops(
   }));
   const uploaded: string[] = [];
   try {
-    const rows: (typeof documents.$inferInsert)[] = [];
+    const rows: (typeof receipts.$inferInsert)[] = [];
     for (const item of prepared) {
       const storageKey = storage ? documentStorageKey(input.companyId, item.id) : null;
       if (storage && storageKey) {
@@ -118,7 +135,7 @@ export async function saveReceiptCrops(
         companyId: input.companyId,
         uploadedBy: input.userId,
         batchId: input.batchId,
-        parentDocumentId: input.parentId,
+        parentReceiptId: input.parentId,
         fileName: item.fileName,
         mimeType: "image/jpeg",
         byteSize: item.bytes.length,
@@ -133,7 +150,7 @@ export async function saveReceiptCrops(
       });
     }
     await db.transaction(async (tx) => {
-      await tx.insert(documents).values(rows);
+      await tx.insert(receipts).values(rows);
       await markReceiptSplit(
         tx,
         input.parentId,
@@ -150,7 +167,7 @@ export async function saveReceiptCrops(
 
 async function markReceiptSplit(db: QueryClient, parentId: string, count: number, labels: string[]) {
   await db
-    .update(documents)
+    .update(receipts)
     .set({
       status: "split",
       error: null,
@@ -159,12 +176,12 @@ async function markReceiptSplit(db: QueryClient, parentId: string, count: number
       updatedAt: new Date(),
       processedAt: new Date()
     })
-    .where(eq(documents.id, parentId));
+    .where(eq(receipts.id, parentId));
 }
 
 export async function markReceiptsUnseparated(db: QueryClient, parentId: string, count: number, reason: string) {
   await db
-    .update(documents)
+    .update(receipts)
     .set({
       status: "needs_split",
       error: reason,
@@ -173,61 +190,92 @@ export async function markReceiptsUnseparated(db: QueryClient, parentId: string,
       updatedAt: new Date(),
       processedAt: new Date()
     })
-    .where(eq(documents.id, parentId));
+    .where(eq(receipts.id, parentId));
 }
 
-export async function listDocuments(db: QueryClient, companyId: string) {
-  const parent = alias(documents, "parent_document");
+export async function listUploadFeed(db: QueryClient, companyId: string) {
+  const parent = alias(receipts, "parent_receipt");
   const rows = await db
     .select({
-      id: documents.id,
-      fileName: documents.fileName,
-      mimeType: documents.mimeType,
-      byteSize: documents.byteSize,
-      status: documents.status,
-      txnType: documents.txnType,
-      extractionSource: documents.extractionSource,
-      error: documents.error,
-      createdAt: documents.createdAt,
-      rawExtract: documents.rawExtract,
-      transactionId: transactions.id,
-      parentFileName: parent.fileName
+      id: receipts.id,
+      fileName: receipts.fileName,
+      mimeType: receipts.mimeType,
+      status: receipts.status,
+      extractionSource: receipts.extractionSource,
+      error: receipts.error,
+      createdAt: receipts.createdAt,
+      rawExtract: receipts.rawExtract,
+      expenseId: receipts.expenseId,
+      documentKind: receipts.documentKind,
+      parentFileName: parent.fileName,
+      expenseDescription: expenses.description,
+      expenseMerchant: expenses.merchant,
+      expenseAmount: expenses.amount,
+      expenseDate: expenses.txnDate,
+      expenseReview: expenses.reviewStatus,
+      expenseSource: expenses.extractionSource,
+      groupConfidence: expenses.groupConfidence
     })
-    .from(documents)
-    .leftJoin(transactions, eq(transactions.documentId, documents.id))
-    .leftJoin(parent, eq(parent.id, documents.parentDocumentId))
-    .where(eq(documents.companyId, companyId))
-    .orderBy(desc(documents.createdAt))
+    .from(receipts)
+    .leftJoin(parent, eq(parent.id, receipts.parentReceiptId))
+    .leftJoin(expenses, eq(expenses.id, receipts.expenseId))
+    .where(eq(receipts.companyId, companyId))
+    .orderBy(desc(receipts.createdAt))
     .limit(80);
 
-  const seen = new Map<string, (typeof rows)[number]>();
-  for (const row of rows) {
-    const current = seen.get(row.id);
-    if (!current || (!current.transactionId && row.transactionId)) seen.set(row.id, row);
-  }
-  return [...seen.values()].slice(0, 40).map((row) => ({
-    id: row.id,
-    fileName: row.fileName,
-    mimeType: row.mimeType,
-    byteSize: row.byteSize,
-    status: row.status,
-    txnType: row.txnType,
-    extractionSource: row.extractionSource,
-    error: row.error,
-    createdAt: row.createdAt,
-    transactionId: row.transactionId,
-    parentFileName: row.parentFileName,
-    receiptCount: receiptSplitCount(row.rawExtract)
-  }));
+  const feed: UploadFeedRow[] = rows.map((row) => {
+    const receipt: UploadReceiptCard = {
+      id: row.id,
+      fileName: row.fileName,
+      mimeType: row.mimeType,
+      status: row.status,
+      extractionSource: row.extractionSource,
+      error: row.error,
+      createdAt: row.createdAt.toISOString(),
+      parentFileName: row.parentFileName,
+      receiptCount: receiptSplitCount(row.rawExtract),
+      documentKind: row.documentKind,
+      expenseId: row.expenseId
+    };
+    const expense: UploadExpenseFields | null =
+      row.expenseId && row.expenseDescription && row.expenseAmount && row.expenseDate && row.expenseReview && row.expenseSource
+        ? {
+            id: row.expenseId,
+            description: row.expenseDescription,
+            merchant: row.expenseMerchant ?? "",
+            amount: row.expenseAmount,
+            txnDate: row.expenseDate,
+            reviewStatus: row.expenseReview,
+            extractionSource: row.expenseSource,
+            groupConfidence: row.groupConfidence
+          }
+        : null;
+    return { receipt, expense };
+  });
+  return foldUploadFeed(feed);
 }
 
 export async function retryDocument(db: QueryClient, companyId: string, id: string) {
   const [row] = await db
-    .update(documents)
+    .select({ id: receipts.id, status: receipts.status, expenseId: receipts.expenseId })
+    .from(receipts)
+    .where(and(eq(receipts.id, id), eq(receipts.companyId, companyId)))
+    .limit(1);
+  if (!row) throw new BooksError("Receipt not found.");
+  let allowed = row.status === "failed" || row.status === "needs_split";
+  if (!allowed && row.status === "extracted" && row.expenseId) {
+    const [expense] = await db
+      .select({ reviewStatus: expenses.reviewStatus })
+      .from(expenses)
+      .where(and(eq(expenses.id, row.expenseId), eq(expenses.companyId, companyId)))
+      .limit(1);
+    allowed = expense?.reviewStatus === "needs_review";
+  }
+  if (!allowed) throw new BooksError("Only a failed, unseparated, or unapproved receipt can be retried.");
+  await db
+    .update(receipts)
     .set({ status: "queued", error: null, updatedAt: new Date() })
-    .where(and(eq(documents.id, id), eq(documents.companyId, companyId), inArray(documents.status, ["failed", "needs_split"])))
-    .returning({ id: documents.id });
-  if (!row) throw new BooksError("Only a failed or unseparated photo can be retried.");
+    .where(and(eq(receipts.id, id), eq(receipts.companyId, companyId), inArray(receipts.status, [row.status])));
 }
 
 export async function readDocumentFile(
@@ -238,13 +286,13 @@ export async function readDocumentFile(
 ) {
   const [row] = await db
     .select({
-      fileName: documents.fileName,
-      mimeType: documents.mimeType,
-      fileData: documents.fileData,
-      storageKey: documents.storageKey
+      fileName: receipts.fileName,
+      mimeType: receipts.mimeType,
+      fileData: receipts.fileData,
+      storageKey: receipts.storageKey
     })
-    .from(documents)
-    .where(and(eq(documents.id, id), eq(documents.companyId, companyId)))
+    .from(receipts)
+    .where(and(eq(receipts.id, id), eq(receipts.companyId, companyId)))
     .limit(1);
   if (!row) return null;
   if (!hasStoredBytes(row.fileData) && !row.storageKey) return null;
