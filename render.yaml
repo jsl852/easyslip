@@ -50,6 +50,8 @@ services:
         value: grok-4-fast
       # Optional. Set all four in the dashboard for a private bucket, or leave
       # them unset to keep file bytes in Postgres. Never make the bucket public.
+      # For Cloudflare R2, set AWS_REGION to auto and S3_ENDPOINT to
+      # https://<account-id>.r2.cloudflarestorage.com. S3_ENDPOINT is optional.
       - key: AWS_REGION
         sync: false
       - key: S3_BUCKET
@@ -57,4 +59,6 @@ services:
       - key: AWS_ACCESS_KEY_ID
         sync: false
       - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: S3_ENDPOINT
         sync: false

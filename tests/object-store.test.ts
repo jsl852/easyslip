@@ -1,4 +1,4 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "../src/lib/server/db/client";
 import { readDocumentFile, saveBatch } from "../src/lib/server/documents";
@@ -14,6 +14,7 @@ import {
   readObjectStoreConfig,
   reportStorageKey,
   resetObjectStorageCacheForTests,
+  s3ClientOptions,
   type ObjectStorage
 } from "../src/lib/server/object-store";
 import { getReportFile } from "../src/lib/server/reports";
@@ -119,6 +120,137 @@ describe("object storage config", () => {
     ).toEqual(config);
   });
 
+  it("stays on Postgres when only an endpoint is set", () => {
+    const endpoint = "https://example-account-id.r2.cloudflarestorage.com";
+    expect(readObjectStoreConfig(env({ S3_ENDPOINT: endpoint }))).toBeNull();
+    expect(readObjectStoreConfig(env({ AWS_ENDPOINT_URL: endpoint }))).toBeNull();
+    expect(readObjectStoreConfig(env({ S3_ENDPOINT: "http://not-https.example" }))).toBeNull();
+    expect(
+      readObjectStoreConfig(
+        env({
+          S3_ENDPOINT: "https://one.example",
+          AWS_ENDPOINT_URL: "https://two.example"
+        })
+      )
+    ).toBeNull();
+    expect(objectStorage(env({ S3_ENDPOINT: endpoint }))).toBeNull();
+  });
+
+  it("fails closed when an endpoint accompanies a partial configuration", () => {
+    expect(() =>
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "auto",
+          AWS_SECRET_ACCESS_KEY: secret,
+          S3_ENDPOINT: "https://example-account-id.r2.cloudflarestorage.com"
+        })
+      )
+    ).toThrow(/S3_BUCKET, AWS_ACCESS_KEY_ID/);
+    try {
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "auto",
+          S3_ENDPOINT: "not-a-url",
+          AWS_SECRET_ACCESS_KEY: secret
+        })
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(BooksError);
+      expect((error as Error).message).toMatch(/Object storage is incomplete/);
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
+
+  it("accepts region auto and an https S3_ENDPOINT for Cloudflare R2", () => {
+    expect(
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "AUTO",
+          S3_BUCKET: "easyslip-private",
+          AWS_ACCESS_KEY_ID: "test-access-key",
+          AWS_SECRET_ACCESS_KEY: secret,
+          S3_ENDPOINT: "https://example-account-id.r2.cloudflarestorage.com/"
+        })
+      )
+    ).toEqual({
+      ...config,
+      region: "auto",
+      endpoint: "https://example-account-id.r2.cloudflarestorage.com"
+    });
+  });
+
+  it("accepts AWS_ENDPOINT_URL as an alias of S3_ENDPOINT", () => {
+    const endpoint = "https://example-account-id.r2.cloudflarestorage.com";
+    expect(
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "auto",
+          S3_BUCKET: "easyslip-private",
+          AWS_ACCESS_KEY_ID: "test-access-key",
+          AWS_SECRET_ACCESS_KEY: secret,
+          AWS_ENDPOINT_URL: endpoint
+        })
+      )
+    ).toEqual({ ...config, region: "auto", endpoint });
+    expect(
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "auto",
+          S3_BUCKET: "easyslip-private",
+          AWS_ACCESS_KEY_ID: "test-access-key",
+          AWS_SECRET_ACCESS_KEY: secret,
+          S3_ENDPOINT: `${endpoint}/`,
+          AWS_ENDPOINT_URL: endpoint
+        })
+      )
+    ).toEqual({ ...config, region: "auto", endpoint });
+  });
+
+  it("rejects an endpoint that is not an https URL", () => {
+    const base = {
+      AWS_REGION: "auto",
+      S3_BUCKET: "easyslip-private",
+      AWS_ACCESS_KEY_ID: "test-access-key",
+      AWS_SECRET_ACCESS_KEY: secret
+    };
+    expect(() =>
+      readObjectStoreConfig(env({ ...base, S3_ENDPOINT: "http://example-account-id.r2.cloudflarestorage.com" }))
+    ).toThrow(/https URL/);
+    expect(() => readObjectStoreConfig(env({ ...base, S3_ENDPOINT: "not-a-url" }))).toThrow(/https URL/);
+    expect(() =>
+      readObjectStoreConfig(
+        env({ ...base, S3_ENDPOINT: "https://example-account-id.r2.cloudflarestorage.com?token=1" })
+      )
+    ).toThrow(/https URL/);
+    try {
+      readObjectStoreConfig(
+        env({
+          ...base,
+          S3_ENDPOINT: `https://user:${secret}@example-account-id.r2.cloudflarestorage.com`
+        })
+      );
+    } catch (error) {
+      expect(error).toBeInstanceOf(BooksError);
+      expect((error as Error).message).toMatch(/https URL/);
+      expect((error as Error).message).not.toContain(secret);
+    }
+  });
+
+  it("rejects S3_ENDPOINT and AWS_ENDPOINT_URL when they differ", () => {
+    expect(() =>
+      readObjectStoreConfig(
+        env({
+          AWS_REGION: "auto",
+          S3_BUCKET: "easyslip-private",
+          AWS_ACCESS_KEY_ID: "test-access-key",
+          AWS_SECRET_ACCESS_KEY: secret,
+          S3_ENDPOINT: "https://example-account-id.r2.cloudflarestorage.com",
+          AWS_ENDPOINT_URL: "https://other.example.r2.cloudflarestorage.com"
+        })
+      )
+    ).toThrow(/must match/);
+  });
+
   it("rejects a bucket name that cannot be a private S3 bucket", () => {
     expect(() =>
       readObjectStoreConfig(
@@ -159,6 +291,62 @@ describe("storage keys", () => {
 });
 
 describe("S3 client", () => {
+  it("uses path-style requests for a custom endpoint and the AWS default otherwise", async () => {
+    const endpoint = "https://example-account-id.r2.cloudflarestorage.com";
+    const r2 = s3ClientOptions({ ...config, region: "auto", endpoint });
+    expect(r2).toMatchObject({
+      region: "auto",
+      endpoint,
+      forcePathStyle: true,
+      requestChecksumCalculation: "WHEN_REQUIRED",
+      responseChecksumValidation: "WHEN_REQUIRED"
+    });
+    const aws = s3ClientOptions(config);
+    expect(aws).toMatchObject({ region: "us-west-2" });
+    expect(aws).not.toHaveProperty("endpoint");
+    expect(aws).not.toHaveProperty("forcePathStyle");
+    expect(aws).not.toHaveProperty("requestChecksumCalculation");
+    expect(aws).not.toHaveProperty("responseChecksumValidation");
+
+    const r2Client = new S3Client(r2);
+    expect(await r2Client.config.region()).toBe("auto");
+    expect(r2Client.config.forcePathStyle).toBe(true);
+    expect(r2Client.config.isCustomEndpoint).toBe(true);
+    const resolveEndpoint = r2Client.config.endpoint;
+    if (!resolveEndpoint) throw new Error("expected a custom endpoint");
+    const resolved = await resolveEndpoint();
+    expect(resolved.protocol).toBe("https:");
+    expect(resolved.hostname).toBe("example-account-id.r2.cloudflarestorage.com");
+    expect(await r2Client.config.requestChecksumCalculation()).toBe("WHEN_REQUIRED");
+    expect(await r2Client.config.responseChecksumValidation()).toBe("WHEN_REQUIRED");
+    r2Client.destroy();
+
+    const awsClient = new S3Client(aws);
+    expect(await awsClient.config.region()).toBe("us-west-2");
+    expect(awsClient.config.forcePathStyle).toBe(false);
+    expect(awsClient.config.isCustomEndpoint).toBe(false);
+    expect(await awsClient.config.requestChecksumCalculation()).toBe("WHEN_SUPPORTED");
+    expect(await awsClient.config.responseChecksumValidation()).toBe("WHEN_SUPPORTED");
+    awsClient.destroy();
+  });
+
+  it("rebuilds the cached client when the endpoint changes", () => {
+    const base = {
+      AWS_REGION: "auto",
+      S3_BUCKET: "easyslip-private",
+      AWS_ACCESS_KEY_ID: "test-access-key",
+      AWS_SECRET_ACCESS_KEY: secret,
+      S3_ENDPOINT: "https://example-account-id.r2.cloudflarestorage.com"
+    };
+    const first = objectStorage(env(base));
+    expect(objectStorage(env(base))).toBe(first);
+    const changed = objectStorage(
+      env({ ...base, S3_ENDPOINT: "https://other.example.r2.cloudflarestorage.com" })
+    );
+    expect(changed).not.toBe(first);
+    expect(changed).not.toBeNull();
+  });
+
   it("puts and gets objects without a public ACL", async () => {
     const companyId = crypto.randomUUID();
     const documentId = crypto.randomUUID();
