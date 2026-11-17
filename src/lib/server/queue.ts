@@ -4,7 +4,7 @@ import { postFromExtraction } from "./books";
 import { getDb } from "./db/client";
 import { categories, documents } from "./db/schema";
 import { BooksError } from "./errors";
-import { asBuffer } from "./files";
+import { loadStoredBytes, objectStorage } from "./object-store";
 import { extractDocument } from "./xai";
 
 const inflight = new Map<string, Promise<void>>();
@@ -62,10 +62,14 @@ async function processDocument(document: typeof documents.$inferSelect): Promise
     .select({ name: categories.name })
     .from(categories)
     .where(and(eq(categories.companyId, document.companyId), eq(categories.active, true)));
+  const bytes = await loadStoredBytes(
+    { fileData: document.fileData, storageKey: document.storageKey },
+    document.storageKey ? objectStorage() : null
+  );
   const extract = await extractDocument({
     fileName: document.fileName,
     mimeType: document.mimeType,
-    bytes: asBuffer(document.fileData),
+    bytes,
     txnType: document.txnType as TxnType,
     categories: categoryRows.map((row) => row.name)
   });
