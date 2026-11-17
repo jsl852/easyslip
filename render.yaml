@@ -1,0 +1,50 @@
+# EasySlip on Render. Apply this Blueprint from the dashboard when you are ready.
+# Free web services spin down after 15 minutes idle. Free Postgres expires 30 days after creation.
+
+databases:
+  - name: easyslip-db
+    plan: free
+    region: oregon
+    postgresMajorVersion: "16"
+    databaseName: easyslip
+
+services:
+  - type: web
+    name: easyslip
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: npm ci && npm run build
+    startCommand: npm run db:migrate && node build
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: HOST
+        value: 0.0.0.0
+      - key: PROTOCOL_HEADER
+        value: x-forwarded-proto
+      - key: HOST_HEADER
+        value: x-forwarded-host
+      - key: BODY_SIZE_LIMIT
+        value: 80M
+      - key: DATABASE_URL
+        fromDatabase:
+          name: easyslip-db
+          property: connectionString
+      - key: DATABASE_SSL
+        value: require
+      - key: AUTH_SECRET
+        generateValue: true
+      - key: AUTH_TRUST_HOST
+        value: "true"
+      - key: AUTH_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: XAI_MODEL
+        value: grok-4-fast
