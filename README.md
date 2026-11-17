@@ -4,14 +4,14 @@ EasySlip is a receipt-led accounting workspace for Hong Kong SMEs. You sign in, 
 
 This is an original v1. It follows the public behavior of the [247 AICFO HK demo](https://www.youtube.com/watch?v=Pzu6l8gZ4kU) (batch upload, human review, journal lines, formula workbook). It does not reuse that product's code or services.
 
-Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-company consolidation. Employee cash bands can be added as settlement accounts. A separate mobile claims app is not included.
+Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-company consolidation. Employee cash bands can be added as settlement accounts. A separate mobile claims app is not included. The same site can be installed on a phone.
 
 ## What you can do
 
 1. Sign in with Google. A local development sign-in is available only when you turn it on.
 2. Create one company. EasySlip seeds a Hong Kong chart of accounts, categories, and a few starter keyword rules.
 3. Upload up to 20 PDFs or images at a time, marked as an expense, purchase, or sale, against a bank, cash, card, or staff cash band.
-4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
+4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. A photo that shows more than one physical slip is separated first, and each slip becomes its own document. If the edges are not clear enough to crop, the original photo stays in the list and says how many slips were found, instead of merging them into one entry. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
 5. Correct the date, amount, category, and settlement account. Saving rewrites the journal lines. Approving removes the row from the review queue.
 6. Maintain the chart, categories, keyword rules, and opening balances.
 7. Preview a period and download an Excel workbook. `JL` holds values. Account sheets, `SJ` / `PJ` / `EJ`, `TB`, `BS`, and `PL` use formulas. Yellow opening cells on `TB` are editable so a migrated balance can be adjusted in the sheet. Documents outside the period stay in the database and are left out of the file.
@@ -97,9 +97,29 @@ ORIGIN=http://127.0.0.1:4173 BODY_SIZE_LIMIT=80M PORT=4173 HOST=0.0.0.0 node bui
 | `ORIGIN` | local production build | Public origin, such as `http://127.0.0.1:4173`. The Node adapter otherwise treats the request as HTTPS |
 | `PROTOCOL_HEADER` | on Render | `x-forwarded-proto`, so Auth.js sees HTTPS behind Render's proxy |
 | `HOST_HEADER` | on Render | `x-forwarded-host` |
-| `BODY_SIZE_LIMIT` | on Render | `80M`. Each file is still limited to 8 MB inside the app |
+| `BODY_SIZE_LIMIT` | on Render | `80M`. Each file is still limited to 8 MB inside the app. Photos with a long edge over 2400px are resized in the browser first. PDFs are uploaded unchanged |
 
 Do not commit `.env` or real keys. `.env.example` has placeholders only.
+
+## On a phone
+
+Sign in, create the company, then take a receipt photo or choose one from the library. A large photo is compressed in the browser before it uploads, and the whole frame is kept so two slips in one picture can still be split. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipts, and each one can be previewed. When reading finishes, open the preview, correct the line, and approve it.
+
+### Add to the Home Screen
+
+The production site is already served over HTTPS.
+
+iPhone, in Safari: open the site, tap Share, then Add to Home Screen. iOS does not offer an automatic install banner, so the Share sheet is the install path. The icon is labelled EasySlip and opens without the Safari toolbar.
+
+Android, in Chrome: open the site, then Install app, or use the browser menu and choose Add to Home Screen or Install. The installed app opens standalone.
+
+The icon opens `/?source=pwa`. A signed-in member with a company continues into the workspace. A signed-in member without a company continues to company setup. Anyone else stays on the site root.
+
+### What the service worker stores
+
+The service worker caches the app shell only: hashed JavaScript and CSS, the icons, the favicon, and `offline.html`. It does not cache receipt images, report downloads, workspace HTML, SvelteKit `__data` responses, or auth and sign-out responses. Those requests are network-only and use `cache: "no-store"`. If a private page cannot be loaded, EasySlip shows the offline page instead of a saved copy.
+
+The installed app still needs a connection to sign in, upload, and read a receipt. A flaky connection can reuse the saved shell files. Private data is never reused from cache. The path rules live in `src/service-worker.ts` and `src/lib/pwa/cache-policy.ts`.
 
 ## Render
 

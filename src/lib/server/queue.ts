@@ -1,11 +1,16 @@
 import { and, asc, eq, lt } from "drizzle-orm";
+import { planReceiptSplit } from "$lib/accounting/receipt-layout";
 import type { TxnType } from "$lib/accounting/types";
 import { postFromExtraction } from "./books";
 import { getDb } from "./db/client";
 import { categories, documents } from "./db/schema";
+import { markReceiptsUnseparated, saveReceiptCrops } from "./documents";
 import { BooksError } from "./errors";
 import { loadStoredBytes, objectStorage } from "./object-store";
-import { extractDocument } from "./xai";
+import { cropReceiptBoxes, prepareReceiptImage } from "./receipt-crop";
+import { extractDocument, locateReceipts } from "./xai";
+
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
 const inflight = new Map<string, Promise<void>>();
 
@@ -66,6 +71,12 @@ async function processDocument(document: typeof documents.$inferSelect): Promise
     { fileData: document.fileData, storageKey: document.storageKey },
     document.storageKey ? objectStorage() : null
   );
+  let detectionWarning: string | null = null;
+  if (!document.parentDocumentId && IMAGE_TYPES.has(document.mimeType)) {
+    const separated = await separateReceipts(db, document, bytes);
+    if (separated === "done") return;
+    detectionWarning = separated;
+  }
   const extract = await extractDocument({
     fileName: document.fileName,
     mimeType: document.mimeType,
@@ -73,6 +84,7 @@ async function processDocument(document: typeof documents.$inferSelect): Promise
     txnType: document.txnType as TxnType,
     categories: categoryRows.map((row) => row.name)
   });
+  if (detectionWarning) extract.warnings = [...extract.warnings, detectionWarning].slice(0, 8);
   await db.transaction(async (tx) => {
     await postFromExtraction(tx, {
       companyId: document.companyId,
@@ -94,4 +106,52 @@ async function processDocument(document: typeof documents.$inferSelect): Promise
       })
       .where(eq(documents.id, document.id));
   });
+}
+
+async function separateReceipts(
+  db: ReturnType<typeof getDb>,
+  document: typeof documents.$inferSelect,
+  bytes: Buffer
+): Promise<"done" | string | null> {
+  let prepared;
+  try {
+    prepared = await prepareReceiptImage(bytes);
+  } catch {
+    return "EasySlip could not check this photo for more than one receipt, so it was read as a single document.";
+  }
+
+  const located = await locateReceipts({ bytes: prepared.preview });
+  if (located.status === "skip") return null;
+  if (located.status === "warning") return located.warning;
+
+  const plan = planReceiptSplit(located.value);
+  if (plan.action === "single") return null;
+  if (plan.action === "unseparated") {
+    await markReceiptsUnseparated(db, document.id, plan.count, plan.reason);
+    return "done";
+  }
+
+  try {
+    const crops = await cropReceiptBoxes(prepared.full, plan.boxes, prepared.width, prepared.height);
+    await saveReceiptCrops(db, {
+      parentId: document.id,
+      companyId: document.companyId,
+      userId: document.uploadedBy,
+      batchId: document.batchId,
+      txnType: document.txnType,
+      settlementAccountId: document.settlementAccountId,
+      boxes: plan.boxes,
+      crops
+    });
+    return "done";
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.slice(0, 160) : "The crops could not be saved.";
+    await markReceiptsUnseparated(
+      db,
+      document.id,
+      plan.boxes.length,
+      `${plan.boxes.length} receipts found, but EasySlip could not separate the photo (${detail}). Nothing was dropped. Open the photo, or upload each slip on its own.`
+    );
+    return "done";
+  }
 }

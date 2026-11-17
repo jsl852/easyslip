@@ -15,6 +15,13 @@
       "when": 1794890271417,
       "tag": "0001_object_storage",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794910785770,
+      "tag": "0002_receipt_parent",
+      "breakpoints": true
     }
   ]
 }

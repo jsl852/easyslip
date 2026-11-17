@@ -10,7 +10,7 @@
   <form method="POST" class="stack">
     <label>
       <span>Company name</span>
-      <input name="name" required minlength="2" maxlength="120" value={form?.name ?? ""} placeholder="Harbour Lane Studio Limited" />
+      <input name="name" required minlength="2" maxlength="120" autocomplete="organization" value={form?.name ?? ""} placeholder="Harbour Lane Studio Limited" />
     </label>
     <button type="submit">Create workspace</button>
   </form>

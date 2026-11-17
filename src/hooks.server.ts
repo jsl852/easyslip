@@ -1,6 +1,7 @@
 import { redirect, type Handle } from "@sveltejs/kit";
 import { sequence } from "@sveltejs/kit/hooks";
 import { env } from "$env/dynamic/private";
+import { applyResponseCacheHeaders } from "$lib/pwa/cache-policy";
 import { handle as authenticationHandle } from "$lib/server/auth";
 import { loadWorkspace } from "$lib/server/workspace";
 
@@ -40,4 +41,10 @@ const authorizationHandle: Handle = async ({ event, resolve }) => {
   return resolve(event);
 };
 
-export const handle = sequence(syncHandle, authenticationHandle, authorizationHandle);
+const cacheHeaderHandle: Handle = async ({ event, resolve }) => {
+  const response = await resolve(event);
+  applyResponseCacheHeaders(event.url.pathname, response.headers);
+  return response;
+};
+
+export const handle = sequence(cacheHeaderHandle, syncHandle, authenticationHandle, authorizationHandle);

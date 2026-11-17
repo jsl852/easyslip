@@ -25,6 +25,62 @@ function prompt(txnType: TxnType, categories: string[], text?: string): string {
   return lines.join("\n");
 }
 
+const LOCATE_SYSTEM =
+  "You inspect one photo and count the separate physical receipts, invoices, and card slips in it. Reply with JSON only. Keys: count (integer), confident (boolean), receipts (array). Each receipt has label (short string), x, y, width, height (fractions from 0 to 1, origin at the top left, width and height are the box size). Side-by-side, stacked, and partly overlapping papers are separate slips. One piece of paper is one slip even when it prints both an item list and a payment total. Ignore the table, hands, and background. confident is false when a box would mix two slips or the paper edges are too unclear to crop. If there is only one slip, count is 1. Do not extract amounts, dates, or merchants.";
+
+const DETECTION_WARNING =
+  "EasySlip could not check this photo for more than one receipt, so it was read as a single document.";
+
+export type LocateResult = { status: "skip" } | { status: "ok"; value: unknown } | { status: "warning"; warning: string };
+
+export async function locateReceipts(input: { bytes: Buffer }): Promise<LocateResult> {
+  const apiKey = process.env.XAI_API_KEY?.trim();
+  if (!apiKey) return { status: "skip" };
+
+  const model = process.env.XAI_MODEL?.trim() || DEFAULT_MODEL;
+  const base = (process.env.XAI_API_BASE?.trim() || DEFAULT_BASE).replace(/\/$/, "");
+
+  try {
+    const response = await fetch(`${base}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: LOCATE_SYSTEM },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: "How many separate slips are in this photo?" },
+              { type: "image_url", image_url: { url: `data:image/jpeg;base64,${input.bytes.toString("base64")}` } }
+            ]
+          }
+        ]
+      }),
+      signal: AbortSignal.timeout(45_000)
+    });
+
+    if (!response.ok) {
+      console.error("EasySlip receipt detection failed", response.status);
+      return { status: "warning", warning: DETECTION_WARNING };
+    }
+
+    const body = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> };
+    const content = body.choices?.[0]?.message?.content;
+    if (typeof content !== "string" || !content.trim()) return { status: "warning", warning: DETECTION_WARNING };
+    return { status: "ok", value: parseModelJson(content) };
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 180) : "The model request failed.";
+    console.error("EasySlip receipt detection failed", message);
+    return { status: "warning", warning: DETECTION_WARNING };
+  }
+}
+
 export async function extractDocument(input: {
   fileName: string;
   mimeType: string;

@@ -13,7 +13,7 @@
     <h1>Overview</h1>
     <p class="sub">{data.workspace.company.name} · {formatIsoDate(data.from)} to {formatIsoDate(data.today)}, Hong Kong dates.</p>
   </div>
-  <a class="button" href="/app/upload">Upload documents</a>
+  <a class="button" href="/app/upload">Upload a receipt</a>
 </div>
 
 <div class="stats">
