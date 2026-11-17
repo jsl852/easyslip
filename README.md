@@ -97,13 +97,13 @@ ORIGIN=http://127.0.0.1:4173 BODY_SIZE_LIMIT=80M PORT=4173 HOST=0.0.0.0 node bui
 | `ORIGIN` | local production build | Public origin, such as `http://127.0.0.1:4173`. The Node adapter otherwise treats the request as HTTPS |
 | `PROTOCOL_HEADER` | on Render | `x-forwarded-proto`, so Auth.js sees HTTPS behind Render's proxy |
 | `HOST_HEADER` | on Render | `x-forwarded-host` |
-| `BODY_SIZE_LIMIT` | on Render | `80M`. Each file is still limited to 8 MB inside the app |
+| `BODY_SIZE_LIMIT` | on Render | `80M`. Each file is still limited to 8 MB inside the app. Photos with a long edge over 2400px are resized in the browser first. PDFs are uploaded unchanged |
 
 Do not commit `.env` or real keys. `.env.example` has placeholders only.
 
 ## On a phone
 
-Sign in, create the company, then take a receipt photo or choose one from the library. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipts, and each one can be previewed. When reading finishes, open the preview, correct the line, and approve it.
+Sign in, create the company, then take a receipt photo or choose one from the library. A large photo is compressed in the browser before it uploads, and the whole frame is kept so two slips in one picture can still be split. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipts, and each one can be previewed. When reading finishes, open the preview, correct the line, and approve it.
 
 ### Add to the Home Screen
 

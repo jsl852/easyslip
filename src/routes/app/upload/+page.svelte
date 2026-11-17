@@ -3,12 +3,18 @@
   import { invalidateAll } from "$app/navigation";
   import { formatIsoDate } from "$lib/accounting/dates";
   import { prepareUploadFile } from "$lib/upload-prepare";
-  import { addUploadFiles } from "$lib/uploads";
+  import { addUploadFiles, isHeicFile } from "$lib/uploads";
   let { data, form } = $props();
   let files = $state<File[]>([]);
   let notice = $state<string | null>(null);
   let pending = $state(false);
   let preparing = $state(false);
+  let prepareStatus = $state<string | null>(null);
+
+  function isClientImage(file: File) {
+    if (file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return false;
+    return isHeicFile(file) || file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  }
   let previewUrls = $state<string[]>([]);
 
   const reading = $derived(data.documents.filter((document) => document.status === "queued" || document.status === "processing").length);
@@ -57,14 +63,25 @@
     input.value = "";
     if (list.length === 0) return;
     preparing = true;
+    prepareStatus = null;
     try {
       const prepared: File[] = [];
-      for (const file of list) prepared.push(await prepareUploadFile(file));
+      const imageCount = list.filter(isClientImage).length;
+      let seen = 0;
+      for (const file of list) {
+        if (isClientImage(file)) {
+          seen += 1;
+          prepareStatus = imageCount > 1 ? `Compressing photos… ${seen} of ${imageCount}` : "Compressing photos…";
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        prepared.push(await prepareUploadFile(file));
+      }
       const result = addUploadFiles(files, prepared);
       files = result.files;
       notice = result.message;
     } finally {
       preparing = false;
+      prepareStatus = null;
     }
   }
 
@@ -74,7 +91,13 @@
   }
 
   const queueLabel = $derived(
-    preparing ? "Preparing photo…" : pending ? "Queuing…" : files.length === 0 ? "Queue receipt" : `Queue ${files.length} receipt${files.length === 1 ? "" : "s"}`
+    preparing
+      ? (prepareStatus ?? "Adding files…")
+      : pending
+        ? "Queuing…"
+        : files.length === 0
+          ? "Queue receipt"
+          : `Queue ${files.length} receipt${files.length === 1 ? "" : "s"}`
   );
 </script>
 
@@ -135,18 +158,19 @@
       </div>
       <div class="file-choices">
         <label class="file-choice">
-          <input name="files" type="file" accept="image/*" capture="environment" onchange={onPick} />
+          <input name="files" type="file" accept="image/*" capture="environment" disabled={preparing} onchange={onPick} />
           <span class="file-choice-kicker">Camera</span>
           <span class="file-choice-title">Take photo</span>
           <span class="file-choice-hint">Opens the rear camera</span>
         </label>
         <label class="file-choice file-choice-secondary">
-          <input name="files" type="file" accept="image/*,application/pdf" multiple onchange={onPick} />
+          <input name="files" type="file" accept="image/*,application/pdf" multiple disabled={preparing} onchange={onPick} />
           <span class="file-choice-kicker">Library</span>
           <span class="file-choice-title">Photo library or file</span>
           <span class="file-choice-hint">JPEG, PNG, WebP, GIF, or PDF</span>
         </label>
       </div>
+      {#if prepareStatus}<p class="sub" aria-live="polite">{prepareStatus}</p>{/if}
       {#if files.length}
         <ul class="picked">
           {#each files as file, index (`${file.name}-${file.size}-${file.lastModified}-${index}`)}

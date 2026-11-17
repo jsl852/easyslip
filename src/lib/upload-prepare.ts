@@ -1,60 +1,136 @@
+import {
+  UPLOAD_JPEG_QUALITIES,
+  exifAlreadyApplied,
+  fittedSize,
+  orientedPixelSize,
+  readJpegMeta,
+  shouldReworkImage
+} from "$lib/upload-image";
 import { isAllowedUpload, isHeicFile, MAX_FILE_BYTES } from "$lib/uploads";
-
-const MAX_EDGE = 2200;
 
 function jpegName(name: string): string {
   const base = name.replace(/\.[^.]+$/, "").trim() || "receipt";
   return `${base}.jpg`;
 }
 
-async function decode(file: File, width?: number, height?: number): Promise<ImageBitmap> {
-  const options: ImageBitmapOptions = { imageOrientation: "from-image" };
-  if (width && height) {
-    options.resizeWidth = width;
-    options.resizeHeight = height;
-    options.resizeQuality = "high";
-  }
-  try {
-    return await createImageBitmap(file, options);
-  } catch {
-    return await createImageBitmap(file);
-  }
-}
-
 function blobToJpeg(canvas: HTMLCanvasElement, quality: number): Promise<Blob | null> {
   return new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", quality));
 }
 
-/** Turn HEIC photos and oversized images into a JPEG the upload limit will accept. */
+async function decodeForOrientation(file: File): Promise<{ bitmap: ImageBitmap; baked: boolean }> {
+  try {
+    return { bitmap: await createImageBitmap(file, { imageOrientation: "none" }), baked: false };
+  } catch {
+    try {
+      return { bitmap: await createImageBitmap(file, { imageOrientation: "from-image" }), baked: true };
+    } catch {
+      return { bitmap: await createImageBitmap(file), baked: true };
+    }
+  }
+}
+
+function drawOriented(
+  ctx: CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  orientation: number,
+  scale: number
+) {
+  const width = bitmap.width;
+  const height = bitmap.height;
+  ctx.scale(scale, scale);
+  switch (orientation) {
+    case 2:
+      ctx.transform(-1, 0, 0, 1, width, 0);
+      break;
+    case 3:
+      ctx.transform(-1, 0, 0, -1, width, height);
+      break;
+    case 4:
+      ctx.transform(1, 0, 0, -1, 0, height);
+      break;
+    case 5:
+      ctx.transform(0, 1, 1, 0, 0, 0);
+      break;
+    case 6:
+      ctx.transform(0, 1, -1, 0, height, 0);
+      break;
+    case 7:
+      ctx.transform(0, -1, -1, 0, height, width);
+      break;
+    case 8:
+      ctx.transform(0, -1, 1, 0, 0, width);
+      break;
+    default:
+      break;
+  }
+  ctx.drawImage(bitmap, 0, 0);
+}
+
+/**
+ * Shrink a large receipt photo in the browser before upload.
+ * The whole photo is kept, including every slip in the frame, so the server can split it later.
+ * PDFs are returned unchanged.
+ */
 export async function prepareUploadFile(file: File): Promise<File> {
-  const heic = isHeicFile(file);
-  const image = heic || file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp|hei[cf])$/i.test(file.name);
-  if (!image || (!heic && file.size <= MAX_FILE_BYTES && isAllowedUpload(file))) return file;
+  const image =
+    isHeicFile(file) || file.type.startsWith("image/") || /\.(png|jpe?g|gif|webp)$/i.test(file.name);
+  if (!image || file.type === "application/pdf" || /\.pdf$/i.test(file.name)) return file;
   if (typeof document === "undefined" || typeof createImageBitmap !== "function") return file;
 
   let bitmap: ImageBitmap | null = null;
   try {
-    bitmap = await decode(file);
-    const scale = Math.min(1, MAX_EDGE / Math.max(bitmap.width, bitmap.height));
-    const width = Math.max(1, Math.round(bitmap.width * scale));
-    const height = Math.max(1, Math.round(bitmap.height * scale));
-    if (scale < 1) {
-      bitmap.close();
-      bitmap = await decode(file, width, height);
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const meta = readJpegMeta(bytes);
+    const heic = isHeicFile(file);
+    const decoded = heic
+      ? {
+          bitmap: await createImageBitmap(file, { imageOrientation: "from-image" }).catch(() => createImageBitmap(file)),
+          baked: true
+        }
+      : await decodeForOrientation(file);
+    bitmap = decoded.bitmap;
+    const baked =
+      decoded.baked ||
+      (meta.width !== null &&
+        meta.height !== null &&
+        exifAlreadyApplied(bitmap.width, bitmap.height, meta.width, meta.height, meta.orientation));
+    const orientation = baked ? 1 : meta.orientation;
+    const oriented = orientedPixelSize(bitmap.width, bitmap.height, orientation);
+    if (
+      !shouldReworkImage({
+        heic,
+        allowed: isAllowedUpload(file),
+        size: file.size,
+        width: oriented.width,
+        height: oriented.height,
+        maxBytes: MAX_FILE_BYTES
+      })
+    ) {
+      return file;
     }
+
+    const fit = fittedSize(oriented.width, oriented.height);
     const canvas = document.createElement("canvas");
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
+    canvas.width = fit.width;
+    canvas.height = fit.height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return file;
-    ctx.drawImage(bitmap, 0, 0);
-    let blob: Blob | null = null;
-    for (const quality of [0.86, 0.72, 0.58]) {
-      blob = await blobToJpeg(canvas, quality);
-      if (blob && blob.size <= MAX_FILE_BYTES) break;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    drawOriented(ctx, bitmap, orientation, fit.scale);
+
+    let chosen: Blob | null = null;
+    for (const quality of UPLOAD_JPEG_QUALITIES) {
+      const blob = await blobToJpeg(canvas, quality);
+      if (!blob) continue;
+      chosen = blob;
+      if (blob.size <= MAX_FILE_BYTES) break;
     }
-    if (!blob) return file;
-    return new File([blob], jpegName(file.name), { type: "image/jpeg", lastModified: file.lastModified });
+    if (!chosen || chosen.size > MAX_FILE_BYTES) return file;
+    if (chosen.size >= file.size && file.size <= MAX_FILE_BYTES && isAllowedUpload(file) && !heic) return file;
+    return new File([chosen], jpegName(file.name), { type: "image/jpeg", lastModified: file.lastModified });
   } catch {
     return file;
   } finally {
