@@ -145,6 +145,28 @@ describe("web app manifest and icons", () => {
   });
 });
 
+describe("sign-in page", () => {
+  it("uses the official light Google button and hides the redirect URI", () => {
+    const page = readFileSync("src/routes/login/+page.svelte", "utf8");
+    const server = readFileSync("src/routes/login/+page.server.ts", "utf8");
+    const css = readFileSync("src/app.css", "utf8");
+    expect(page).toContain("Continue with Google");
+    expect(page).toContain('class="gsi-material-button"');
+    expect(page).toContain('fill="#EA4335"');
+    expect(page).toContain('fill="#4285F4"');
+    expect(page).toContain('fill="#FBBC05"');
+    expect(page).toContain('fill="#34A853"');
+    expect(page).not.toContain("Redirect URI");
+    expect(page).not.toContain("callbackUrl");
+    expect(page).not.toContain("Use your company Google account");
+    expect(server).not.toContain("callbackUrl");
+    expect(css).toContain("button.gsi-material-button");
+    expect(css).toContain("border-radius: 4px");
+    expect(css).toContain("#747775");
+    expect(css).toContain("height: 40px");
+  });
+});
+
 describe("mobile upload markup", () => {
   it("offers the rear camera and a separate library or file picker", () => {
     const page = readFileSync("src/routes/app/upload/+page.svelte", "utf8");

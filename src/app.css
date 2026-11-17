@@ -444,3 +444,98 @@ button, .button, .file-choice, .thumb-nav a, summary { touch-action: manipulatio
 @media (max-width: 380px) {
   .stats { grid-template-columns: 1fr; }
 }
+
+/* Light rectangular "Continue with Google" button from Google's HTML configurator:
+   https://developers.google.com/identity/branding-guidelines
+   Fill #FFFFFF, 1px #747775 stroke, 4px radius, 40px height, 12/10/12 padding, 20px G. */
+button.gsi-material-button {
+  -moz-user-select: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: #fff;
+  background-image: none;
+  border: 1px solid #747775;
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: #1f1f1f;
+  cursor: pointer;
+  font-family: Roboto, arial, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.25px;
+  height: 40px;
+  min-height: 40px;
+  line-height: 20px;
+  outline: none;
+  overflow: hidden;
+  padding: 0 12px;
+  position: relative;
+  text-align: center;
+  transition: background-color .218s, border-color .218s, box-shadow .218s;
+  vertical-align: middle;
+  white-space: nowrap;
+  width: auto;
+  max-width: 400px;
+  min-width: min-content;
+}
+button.gsi-material-button .gsi-material-button-icon {
+  height: 20px;
+  margin-right: 10px;
+  min-width: 20px;
+  width: 20px;
+}
+button.gsi-material-button .gsi-material-button-icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+button.gsi-material-button .gsi-material-button-content-wrapper {
+  align-items: center;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  height: 100%;
+  justify-content: space-between;
+  position: relative;
+  width: 100%;
+}
+button.gsi-material-button .gsi-material-button-contents {
+  flex-grow: 1;
+  font-family: Roboto, arial, sans-serif;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: top;
+}
+button.gsi-material-button .gsi-material-button-state {
+  transition: opacity .218s;
+  bottom: 0;
+  left: 0;
+  opacity: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
+}
+button.gsi-material-button:disabled {
+  cursor: default;
+  background-color: #ffffff61;
+  border-color: #1f1f1f1f;
+  opacity: 1;
+}
+button.gsi-material-button:disabled .gsi-material-button-contents,
+button.gsi-material-button:disabled .gsi-material-button-icon { opacity: 38%; }
+button.gsi-material-button:not(:disabled):active .gsi-material-button-state,
+button.gsi-material-button:not(:disabled):focus .gsi-material-button-state {
+  background-color: #303030;
+  opacity: 12%;
+}
+button.gsi-material-button:not(:disabled):hover {
+  box-shadow: 0 1px 2px 0 rgba(60, 64, 67, .30), 0 1px 3px 1px rgba(60, 64, 67, .15);
+}
+button.gsi-material-button:not(:disabled):hover .gsi-material-button-state {
+  background-color: #303030;
+  opacity: 8%;
+}
+button.gsi-material-button:focus-visible { outline: none; }

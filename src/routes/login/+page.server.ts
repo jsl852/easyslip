@@ -15,7 +15,6 @@ export const load: PageServerLoad = async (event) => {
   }
   return {
     redirectTo,
-    callbackUrl: `${event.url.origin}/auth/callback/google`,
     configured: Boolean(authSecret()),
     google: googleConfigured(),
     devLogin: devLoginState(),
