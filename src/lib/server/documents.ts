@@ -3,37 +3,70 @@ import type { TxnType } from "$lib/accounting/types";
 import { type QueryClient } from "./db/client";
 import { documents } from "./db/schema";
 import { BooksError } from "./errors";
-import { asBuffer, cleanFileName, MAX_BATCH, MAX_FILE_BYTES, sniffMime } from "./files";
+import { cleanFileName, MAX_BATCH, MAX_FILE_BYTES, sniffMime } from "./files";
+import {
+  deleteStoredKeys,
+  documentStorageKey,
+  hasStoredBytes,
+  loadStoredBytes,
+  objectStorage,
+  placeFile,
+  type ObjectStorage
+} from "./object-store";
 
 export async function saveBatch(
   db: QueryClient,
-  input: { companyId: string; userId: string; txnType: TxnType; settlementAccountId: string; files: File[] }
+  input: { companyId: string; userId: string; txnType: TxnType; settlementAccountId: string; files: File[] },
+  storage: ObjectStorage | null = objectStorage()
 ) {
   if (input.files.length === 0) throw new BooksError("Choose at least one PDF or image.");
   if (input.files.length > MAX_BATCH) throw new BooksError(`Upload up to ${MAX_BATCH} files at a time.`);
   const batchId = crypto.randomUUID();
-  const rows = [];
+  const prepared = [];
   for (const file of input.files) {
     if (file.size > MAX_FILE_BYTES) throw new BooksError(`${file.name} is larger than 8 MB.`);
     const bytes = Buffer.from(await file.arrayBuffer());
     const mimeType = sniffMime(bytes);
     if (!mimeType) throw new BooksError(`${file.name} is not a PDF, JPEG, PNG, GIF, or WebP.`);
-    rows.push({
-      companyId: input.companyId,
-      uploadedBy: input.userId,
-      batchId,
+    prepared.push({
+      id: crypto.randomUUID(),
       fileName: cleanFileName(file.name || "document"),
       mimeType,
-      byteSize: bytes.length,
-      fileData: bytes,
-      source: "upload",
-      status: "queued",
-      txnType: input.txnType,
-      settlementAccountId: input.settlementAccountId
+      bytes
     });
   }
-  await db.insert(documents).values(rows);
-  return { batchId, count: rows.length };
+
+  const uploaded: string[] = [];
+  try {
+    const rows = [];
+    for (const item of prepared) {
+      const storageKey = storage ? documentStorageKey(input.companyId, item.id) : null;
+      if (storage && storageKey) {
+        uploaded.push(storageKey);
+        await placeFile(storage, { key: storageKey, body: item.bytes, contentType: item.mimeType });
+      }
+      rows.push({
+        id: item.id,
+        companyId: input.companyId,
+        uploadedBy: input.userId,
+        batchId,
+        fileName: item.fileName,
+        mimeType: item.mimeType,
+        byteSize: item.bytes.length,
+        fileData: storageKey ? null : item.bytes,
+        storageKey,
+        source: "upload",
+        status: "queued",
+        txnType: input.txnType,
+        settlementAccountId: input.settlementAccountId
+      });
+    }
+    await db.insert(documents).values(rows);
+    return { batchId, count: rows.length };
+  } catch (error) {
+    if (storage && uploaded.length > 0) await deleteStoredKeys(storage, uploaded);
+    throw error;
+  }
 }
 
 export async function listDocuments(db: QueryClient, companyId: string) {
@@ -64,12 +97,25 @@ export async function retryDocument(db: QueryClient, companyId: string, id: stri
   if (!row) throw new BooksError("Only a failed document can be retried.");
 }
 
-export async function readDocumentFile(db: QueryClient, companyId: string, id: string) {
+export async function readDocumentFile(
+  db: QueryClient,
+  companyId: string,
+  id: string,
+  storage?: ObjectStorage | null
+) {
   const [row] = await db
-    .select({ fileName: documents.fileName, mimeType: documents.mimeType, fileData: documents.fileData })
+    .select({
+      fileName: documents.fileName,
+      mimeType: documents.mimeType,
+      fileData: documents.fileData,
+      storageKey: documents.storageKey
+    })
     .from(documents)
     .where(and(eq(documents.id, id), eq(documents.companyId, companyId)))
     .limit(1);
   if (!row) return null;
-  return { fileName: row.fileName, mimeType: row.mimeType, fileData: asBuffer(row.fileData) };
+  if (!hasStoredBytes(row.fileData) && !row.storageKey) return null;
+  const resolved = storage === undefined ? (row.storageKey ? objectStorage() : null) : storage;
+  const fileData = await loadStoredBytes(row, resolved);
+  return { fileName: row.fileName, mimeType: row.mimeType, fileData };
 }

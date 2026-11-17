@@ -7,6 +7,16 @@ import { type QueryClient } from "./db/client";
 import { accounts, categories, journalLines, openingBalances, reportJobs } from "./db/schema";
 import { BooksError } from "./errors";
 import { isIsoDate } from "$lib/accounting/dates";
+import {
+  deleteStoredKeys,
+  hasStoredBytes,
+  loadStoredBytes,
+  objectStorage,
+  placeFile,
+  reportStorageKey,
+  WORKBOOK_CONTENT_TYPE,
+  type ObjectStorage
+} from "./object-store";
 
 function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "company";
@@ -75,8 +85,11 @@ export async function loadLedger(db: QueryClient, companyId: string, periodFrom:
 
 export async function createReport(
   db: QueryClient,
-  input: { companyId: string; companyName: string; currency: string; userId: string; periodFrom: string; periodTo: string }
+  input: { companyId: string; companyName: string; currency: string; userId: string; periodFrom: string; periodTo: string },
+  storage: ObjectStorage | null = objectStorage()
 ) {
+  const id = crypto.randomUUID();
+  let storageKey: string | null = null;
   try {
     const { statements, journal } = await loadLedger(db, input.companyId, input.periodFrom, input.periodTo);
     const generatedAt = new Date();
@@ -90,20 +103,29 @@ export async function createReport(
       journal
     });
     const fileName = `EasySlip-${slug(input.companyName)}-${input.periodFrom}-to-${input.periodTo}.xlsx`;
+    let fileData: Buffer | null = file;
+    if (storage) {
+      storageKey = reportStorageKey(input.companyId, id);
+      await placeFile(storage, { key: storageKey, body: file, contentType: WORKBOOK_CONTENT_TYPE });
+      fileData = null;
+    }
     const [job] = await db
       .insert(reportJobs)
       .values({
+        id,
         companyId: input.companyId,
         requestedBy: input.userId,
         periodFrom: input.periodFrom,
         periodTo: input.periodTo,
         status: "ready",
         fileName,
-        fileData: file
+        fileData,
+        storageKey
       })
       .returning({ id: reportJobs.id, fileName: reportJobs.fileName });
     return job;
   } catch (error) {
+    if (storage && storageKey) await deleteStoredKeys(storage, [storageKey]);
     const message = error instanceof BooksError ? error.message : "The workbook could not be built.";
     await db.insert(reportJobs).values({
       companyId: input.companyId,
@@ -134,16 +156,25 @@ export async function listReports(db: QueryClient, companyId: string) {
     .limit(20);
 }
 
-export async function getReportFile(db: QueryClient, companyId: string, id: string) {
+export async function getReportFile(
+  db: QueryClient,
+  companyId: string,
+  id: string,
+  storage?: ObjectStorage | null
+) {
   const [row] = await db
     .select({
       fileName: reportJobs.fileName,
       fileData: reportJobs.fileData,
+      storageKey: reportJobs.storageKey,
       status: reportJobs.status
     })
     .from(reportJobs)
     .where(and(eq(reportJobs.id, id), eq(reportJobs.companyId, companyId)))
     .limit(1);
-  if (!row?.fileData || row.status !== "ready" || !row.fileName) return null;
-  return { fileName: row.fileName, fileData: row.fileData };
+  if (!row || row.status !== "ready" || !row.fileName) return null;
+  if (!hasStoredBytes(row.fileData) && !row.storageKey) return null;
+  const resolved = storage === undefined ? (row.storageKey ? objectStorage() : null) : storage;
+  const fileData = await loadStoredBytes(row, resolved);
+  return { fileName: row.fileName, fileData };
 }
