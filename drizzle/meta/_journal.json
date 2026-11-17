@@ -22,6 +22,13 @@
       "when": 1794910785770,
       "tag": "0002_receipt_parent",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794915240391,
+      "tag": "0003_expenses",
+      "breakpoints": true
     }
   ]
 }

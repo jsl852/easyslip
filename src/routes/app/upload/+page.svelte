@@ -17,7 +17,12 @@
   }
   let previewUrls = $state<string[]>([]);
 
-  const reading = $derived(data.documents.filter((document) => document.status === "queued" || document.status === "processing").length);
+  const reading = $derived(
+    data.items.reduce((count, item) => {
+      const receipts = item.kind === "expense" ? item.receipts : [item.receipt];
+      return count + receipts.filter((receipt) => receipt.status === "queued" || receipt.status === "processing").length;
+    }, 0)
+  );
 
   $effect(() => {
     const urls = files.map((file) => (file.type.startsWith("image/") ? URL.createObjectURL(file) : ""));
@@ -105,7 +110,7 @@
   <div class="page-head">
     <div>
       <h1>Upload</h1>
-      <p class="sub">Photograph a receipt, or choose one from the library. A photo with more than one slip is split, and each slip is read on its own. Reading continues if you leave this page.</p>
+      <p class="sub">Photograph a receipt, or choose one from the library. A photo with more than one slip is split, then slips from the same purchase are booked once. Reading continues if you leave this page.</p>
     </div>
   </div>
 
@@ -194,7 +199,7 @@
   {/if}
 
   <section style="margin-top: 1rem;">
-    <h2>Recent documents</h2>
+    <h2>Recent expenses</h2>
     <p class="sub" aria-live="polite">
       {#if reading === 0}
         Nothing is waiting to be read.
@@ -202,62 +207,100 @@
         {reading} receipt{reading === 1 ? "" : "s"} still being read.
       {/if}
     </p>
-    {#if data.documents.length === 0}
+    {#if data.items.length === 0}
       <p class="sub">Nothing uploaded yet. A file named like <code>2024-03-02_cafe_86.50.jpg</code> can fill the manual fallback when no model key is set.</p>
     {:else}
       <div class="mobile-cards">
-        {#each data.documents as document (document.id)}
-          <article class="doc-card">
-            <div class="doc-card-top">
-              <span class="pill {document.status}">{statusLabel(document)}</span>
-              {#if document.extractionSource}<span class="pill {document.extractionSource}">{sourceLabel(document.extractionSource)}</span>{/if}
-              <span class="sub">{formatIsoDate(document.createdAt.toISOString().slice(0, 10))} · {document.txnType}</span>
-            </div>
-            <div class="file-name">{document.fileName}</div>
-            {#if document.parentFileName}<p class="sub">From {document.parentFileName}</p>{/if}
-            {#if statusDetail(document)}<p class="sub">{statusDetail(document)}</p>{/if}
-            <div class="actions">
-              {#if document.status === "extracted" && document.transactionId}
-                <a class="button" href={`/app/transactions/${document.transactionId}`}>Preview</a>
-              {/if}
-              <a class="button secondary" href={`/app/documents/${document.id}/file`}>Receipt</a>
-              {#if document.status === "failed" || document.status === "needs_split"}
-                <form method="POST" action="?/retry">
-                  <input type="hidden" name="id" value={document.id} />
-                  <button class="secondary" type="submit">Retry</button>
-                </form>
-              {/if}
-            </div>
-          </article>
+        {#each data.items as item (item.kind === "expense" ? item.id : item.receipt.id)}
+          {#if item.kind === "expense"}
+            <article class="doc-card">
+              <div class="doc-card-top">
+                <span class="pill {item.reviewStatus}">{item.reviewStatus === "needs_review" ? "Needs review" : "Approved"}</span>
+                {#if item.extractionSource}<span class="pill {item.extractionSource}">{sourceLabel(item.extractionSource)}</span>{/if}
+                <span class="sub">{formatIsoDate(item.txnDate)} · {item.receipts.length} receipt{item.receipts.length === 1 ? "" : "s"}</span>
+              </div>
+              <a class="file-name" href={`/app/transactions/${item.id}`}>{item.description}</a>
+              <ul class="clean">
+                {#each item.receipts as receipt (receipt.id)}
+                  <li>
+                    <a href={`/app/documents/${receipt.id}/file`}>{receipt.fileName}</a>
+                    · {statusLabel(receipt)}
+                    {#if receipt.status === "failed" || receipt.status === "needs_split"}
+                      <form method="POST" action="?/retry">
+                        <input type="hidden" name="id" value={receipt.id} />
+                        <button class="secondary" type="submit">Retry</button>
+                      </form>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
+              <div class="actions">
+                <a class="button" href={`/app/transactions/${item.id}`}>Open expense</a>
+              </div>
+            </article>
+          {:else}
+            {@const receipt = item.receipt}
+            <article class="doc-card">
+              <div class="doc-card-top">
+                <span class="pill {receipt.status}">{statusLabel(receipt)}</span>
+                {#if receipt.extractionSource}<span class="pill {receipt.extractionSource}">{sourceLabel(receipt.extractionSource)}</span>{/if}
+                <span class="sub">{formatIsoDate(receipt.createdAt.slice(0, 10))}</span>
+              </div>
+              <div class="file-name">{receipt.fileName}</div>
+              {#if receipt.parentFileName}<p class="sub">From {receipt.parentFileName}</p>{/if}
+              {#if statusDetail(receipt)}<p class="sub">{statusDetail(receipt)}</p>{/if}
+              <div class="actions">
+                <a class="button secondary" href={`/app/documents/${receipt.id}/file`}>Receipt</a>
+                {#if receipt.status === "failed" || receipt.status === "needs_split"}
+                  <form method="POST" action="?/retry">
+                    <input type="hidden" name="id" value={receipt.id} />
+                    <button class="secondary" type="submit">Retry</button>
+                  </form>
+                {/if}
+              </div>
+            </article>
+          {/if}
         {/each}
       </div>
       <div class="table-wrap mobile-table">
         <table>
-          <thead><tr><th>When</th><th>File</th><th>Type</th><th>Status</th><th></th></tr></thead>
+          <thead><tr><th>When</th><th>Expense</th><th>Receipts</th><th>Status</th><th></th></tr></thead>
           <tbody>
-            {#each data.documents as document (document.id)}
-              <tr>
-                <td>{formatIsoDate(document.createdAt.toISOString().slice(0, 10))}</td>
-                <td><a href={`/app/documents/${document.id}/file`}>{document.fileName}</a></td>
-                <td>{document.txnType}</td>
-                <td>
-                  <span class="pill {document.status}">{statusLabel(document)}</span>
-                  {#if document.extractionSource}<span class="pill {document.extractionSource}">{sourceLabel(document.extractionSource)}</span>{/if}
-                  {#if document.parentFileName}<div class="sub">From {document.parentFileName}</div>{/if}
-                  {#if statusDetail(document)}<div class="sub">{statusDetail(document)}</div>{/if}
-                </td>
-                <td>
-                  {#if document.status === "extracted" && document.transactionId}
-                    <a href={`/app/transactions/${document.transactionId}`}>Preview</a>
-                  {/if}
-                  {#if document.status === "failed" || document.status === "needs_split"}
-                    <form method="POST" action="?/retry">
-                      <input type="hidden" name="id" value={document.id} />
-                      <button class="secondary" type="submit">Retry</button>
-                    </form>
-                  {/if}
-                </td>
-              </tr>
+            {#each data.items as item (item.kind === "expense" ? item.id : item.receipt.id)}
+              {#if item.kind === "expense"}
+                <tr>
+                  <td>{formatIsoDate(item.txnDate)}</td>
+                  <td><a href={`/app/transactions/${item.id}`}>{item.description}</a></td>
+                  <td>
+                    {#each item.receipts as receipt (receipt.id)}
+                      <div><a href={`/app/documents/${receipt.id}/file`}>{receipt.fileName}</a></div>
+                    {/each}
+                  </td>
+                  <td>
+                    <span class="pill {item.reviewStatus}">{item.reviewStatus === "needs_review" ? "Needs review" : "Approved"}</span>
+                    {#if item.groupConfidence}<div class="sub">Grouped at {Math.round(Number(item.groupConfidence) * 100)}%</div>{/if}
+                  </td>
+                  <td><a href={`/app/transactions/${item.id}`}>Open</a></td>
+                </tr>
+              {:else}
+                <tr>
+                  <td>{formatIsoDate(item.receipt.createdAt.slice(0, 10))}</td>
+                  <td>{item.receipt.fileName}</td>
+                  <td><a href={`/app/documents/${item.receipt.id}/file`}>Receipt</a></td>
+                  <td>
+                    <span class="pill {item.receipt.status}">{statusLabel(item.receipt)}</span>
+                    {#if statusDetail(item.receipt)}<div class="sub">{statusDetail(item.receipt)}</div>{/if}
+                  </td>
+                  <td>
+                    {#if item.receipt.status === "failed" || item.receipt.status === "needs_split"}
+                      <form method="POST" action="?/retry">
+                        <input type="hidden" name="id" value={item.receipt.id} />
+                        <button class="secondary" type="submit">Retry</button>
+                      </form>
+                    {/if}
+                  </td>
+                </tr>
+              {/if}
             {/each}
           </tbody>
         </table>

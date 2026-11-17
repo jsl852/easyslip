@@ -54,7 +54,10 @@
             <tr>
               <td>{formatIsoDate(row.txnDate)}</td>
               <td>{row.type}</td>
-              <td><a href={`/app/transactions/${row.id}`}>{row.description}</a></td>
+              <td>
+                <a href={`/app/transactions/${row.id}`}>{row.description}</a>
+                {#if row.receiptCount > 1}<div class="sub">{row.receiptCount} receipts</div>{/if}
+              </td>
               <td>{row.categoryName}</td>
               <td><span class="pill {row.reviewStatus}">{row.reviewStatus === "needs_review" ? "Needs review" : "Approved"}</span></td>
               <td class="num">{formatDecimal(row.amount)}</td>

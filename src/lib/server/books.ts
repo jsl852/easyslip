@@ -1,6 +1,16 @@
-import { and, asc, desc, eq, gte, lte, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { starterAccounts, starterCategories, starterRules } from "$lib/accounting/chart";
 import { isIsoDate } from "$lib/accounting/dates";
+import {
+  canonicalExpensePair,
+  choosePrimary,
+  classifyDocument,
+  evidenceFromExtract,
+  paymentLabelForReceipts,
+  planReceiptGroups,
+  readExtract,
+  roleFor
+} from "$lib/accounting/expense-group";
 import { journalDescription } from "$lib/accounting/filename-hint";
 import { buildJournalEntry } from "$lib/accounting/journal";
 import { defaultCategoryId, matchCategoryName, matchKeyword } from "$lib/accounting/keywords";
@@ -21,12 +31,13 @@ import {
   auditEvents,
   categories,
   companies,
-  documents,
+  expenseRelations,
+  expenses,
   journalLines,
   keywordRules,
   memberships,
   openingBalances,
-  transactions
+  receipts
 } from "./db/schema";
 import { BooksError } from "./errors";
 
@@ -426,13 +437,13 @@ async function resolvePosting(
 
 async function writeLines(
   db: QueryClient,
-  input: { companyId: string; transactionId: string; date: string; description: string; draft: ReturnType<typeof buildJournalEntry> }
+  input: { companyId: string; expenseId: string; date: string; description: string; draft: ReturnType<typeof buildJournalEntry> }
 ) {
-  await db.delete(journalLines).where(eq(journalLines.transactionId, input.transactionId));
+  await db.delete(journalLines).where(eq(journalLines.expenseId, input.expenseId));
   await db.insert(journalLines).values(
     input.draft.lines.map((line) => ({
       companyId: input.companyId,
-      transactionId: input.transactionId,
+      expenseId: input.expenseId,
       docTypeCode: line.docTypeCode,
       lineDate: input.date,
       description: input.description,
@@ -445,28 +456,11 @@ async function writeLines(
   );
 }
 
-export async function postFromExtraction(
-  db: QueryClient,
-  input: {
-    companyId: string;
-    userId: string | null;
-    documentId: string;
-    txnType: TxnType;
-    settlementAccountId: string;
-    extract: ExtractResult;
-  }
-) {
-  const [existing] = await db
-    .select({ id: transactions.id })
-    .from(transactions)
-    .where(eq(transactions.documentId, input.documentId))
-    .limit(1);
-  if (existing) return existing.id;
-
+async function resolveCategoryId(db: QueryClient, companyId: string, txnType: TxnType, extract: ExtractResult) {
   const categoryRows = await db
     .select({ id: categories.id, name: categories.name, kind: categories.kind, active: categories.active })
     .from(categories)
-    .where(and(eq(categories.companyId, input.companyId), eq(categories.active, true)));
+    .where(and(eq(categories.companyId, companyId), eq(categories.active, true)));
   const rules = await db
     .select({
       pattern: keywordRules.pattern,
@@ -475,16 +469,43 @@ export async function postFromExtraction(
       active: keywordRules.active
     })
     .from(keywordRules)
-    .where(eq(keywordRules.companyId, input.companyId));
-  const ruled = matchKeyword(rules, `${input.extract.merchant} ${input.extract.description}`);
-  const hinted = matchCategoryName(categoryRows, input.extract.suggestedCategory);
-  const categoryId = ruled ?? hinted ?? defaultCategoryId(categoryRows, input.txnType);
-  if (!categoryId) throw new BooksError("Add a category before documents can be posted.");
-  const warnings = [...input.extract.warnings];
+    .where(eq(keywordRules.companyId, companyId));
+  const ruled = matchKeyword(rules, `${extract.merchant} ${extract.description}`);
+  const hinted = matchCategoryName(categoryRows, extract.suggestedCategory);
+  const categoryId = ruled ?? hinted ?? defaultCategoryId(categoryRows, txnType);
+  return { categoryId, ruled: Boolean(ruled), hinted: Boolean(hinted) };
+}
+
+function extractionWarnings(extract: ExtractResult, ruled: boolean, hinted: boolean): string[] {
+  const warnings = [...extract.warnings];
   if (ruled) warnings.push("A keyword rule chose the category.");
   else if (!hinted) warnings.push("No keyword or model category matched, so EasySlip used the default for this transaction type.");
-  if ((input.extract.confidence ?? 0) < 0.75) warnings.push("Confidence is below 75%. Please review the amount and category.");
+  if ((extract.confidence ?? 0) < 0.75) warnings.push("Confidence is below 75%. Please review the amount and category.");
+  return warnings;
+}
 
+export async function postExpenseFromReceipt(
+  db: QueryClient,
+  input: {
+    companyId: string;
+    userId: string | null;
+    receiptId: string;
+    txnType: TxnType;
+    settlementAccountId: string;
+    extract: ExtractResult;
+  }
+) {
+  const [receipt] = await db
+    .select({ id: receipts.id, expenseId: receipts.expenseId })
+    .from(receipts)
+    .where(and(eq(receipts.id, input.receiptId), eq(receipts.companyId, input.companyId)))
+    .limit(1);
+  if (!receipt) throw new BooksError("Receipt not found.");
+  if (receipt.expenseId) return receipt.expenseId;
+
+  const { categoryId, ruled, hinted } = await resolveCategoryId(db, input.companyId, input.txnType, input.extract);
+  if (!categoryId) throw new BooksError("Add a category before receipts can be posted.");
+  const warnings = extractionWarnings(input.extract, ruled, hinted);
   const description = journalDescription(input.extract.merchant, input.extract.description) || input.extract.description;
   const resolved = await resolvePosting(db, input.companyId, {
     type: input.txnType,
@@ -495,11 +516,12 @@ export async function postFromExtraction(
     amount: input.extract.amount ?? "0"
   });
   const foreign = input.extract.currency !== "HKD";
+  const kind = classifyDocument(`${input.extract.merchant} ${input.extract.description}`);
+  const paymentMethod = paymentLabelForReceipts([{ kind, text: `${input.extract.merchant} ${input.extract.description}` }]);
   const [created] = await db
-    .insert(transactions)
+    .insert(expenses)
     .values({
       companyId: input.companyId,
-      documentId: input.documentId,
       type: input.txnType,
       settlementAccountId: input.settlementAccountId,
       categoryId,
@@ -510,6 +532,7 @@ export async function postFromExtraction(
       currency: "HKD",
       originalAmount: foreign ? resolved.amount : null,
       originalCurrency: foreign ? input.extract.currency : null,
+      paymentMethod,
       aiConfidence: input.extract.confidence.toFixed(3),
       extractionSource: input.extract.source,
       warnings,
@@ -520,20 +543,304 @@ export async function postFromExtraction(
     .returning();
   await writeLines(db, {
     companyId: input.companyId,
-    transactionId: created.id,
+    expenseId: created.id,
     date: input.extract.txnDate,
     description: resolved.description,
     draft: resolved.draft
   });
+  await db
+    .update(receipts)
+    .set({
+      expenseId: created.id,
+      documentKind: kind,
+      role: roleFor(kind, true),
+      updatedAt: new Date()
+    })
+    .where(eq(receipts.id, receipt.id));
   await db.insert(auditEvents).values({
     companyId: input.companyId,
     actorId: input.userId,
-    entityType: "transaction",
+    entityType: "expense",
     entityId: created.id,
-    action: "transaction.extract",
-    detail: { source: input.extract.source, documentId: input.documentId, categoryId, amount: resolved.amount }
+    action: "expense.extract",
+    detail: { source: input.extract.source, receiptId: input.receiptId, categoryId, amount: resolved.amount }
   });
   return created.id;
+}
+
+export async function linkReceiptToExpense(db: QueryClient, input: { companyId: string; receiptId: string; expenseId: string }) {
+  const [receipt] = await db
+    .update(receipts)
+    .set({ expenseId: input.expenseId, updatedAt: new Date() })
+    .where(and(eq(receipts.id, input.receiptId), eq(receipts.companyId, input.companyId)))
+    .returning({ id: receipts.id });
+  if (!receipt) throw new BooksError("Receipt not found.");
+}
+
+export async function syncExpenseWithReceipts(
+  db: QueryClient,
+  input: { companyId: string; userId: string | null; expenseId: string }
+) {
+  const [expense] = await db
+    .select()
+    .from(expenses)
+    .where(and(eq(expenses.id, input.expenseId), eq(expenses.companyId, input.companyId)))
+    .limit(1);
+  if (!expense) throw new BooksError("Expense not found.");
+  const attached = await db
+    .select()
+    .from(receipts)
+    .where(and(eq(receipts.expenseId, expense.id), eq(receipts.companyId, input.companyId)));
+  const parsed = attached.flatMap((receipt) => {
+    const extract = readExtract(receipt.rawExtract);
+    if (!extract) return [];
+    return [{ receipt, extract, evidence: evidenceFromExtract(receipt.id, extract) }];
+  });
+  if (parsed.length === 0) return expense.id;
+
+  const primary = choosePrimary(parsed.map((item) => item.evidence));
+  const primaryRow = parsed.find((item) => item.evidence.id === primary.id) ?? parsed[0];
+  const paymentMethod = paymentLabelForReceipts(
+    parsed.map((item) => ({
+      kind: classifyDocument(`${item.extract.merchant} ${item.extract.description}`),
+      text: `${item.extract.merchant} ${item.extract.description}`
+    }))
+  );
+  for (const item of parsed) {
+    const kind = classifyDocument(`${item.extract.merchant} ${item.extract.description}`);
+    await db
+      .update(receipts)
+      .set({ documentKind: kind, role: roleFor(kind, item.receipt.id === primary.id), updatedAt: new Date() })
+      .where(eq(receipts.id, item.receipt.id));
+  }
+
+  const plan = planReceiptGroups(parsed.map((item) => item.evidence));
+  const grouped = plan.groups.find((group) => group.ids.length > 1);
+  const warnings = (Array.isArray(expense.warnings) ? expense.warnings : []).filter((warning) => !warning.startsWith("Grouped "));
+  if (parsed.length > 1) {
+    const pct = grouped ? Math.round(grouped.confidence * 100) : 100;
+    warnings.push(`Grouped ${parsed.length} receipts onto one expense (${pct}% match).`);
+  }
+
+  const locked = expense.reviewStatus === "approved" || expense.extractionSource === "manual";
+  if (locked) {
+    await db
+      .update(expenses)
+      .set({
+        paymentMethod: expense.paymentMethod || paymentMethod,
+        groupConfidence: grouped ? grouped.confidence.toFixed(3) : expense.groupConfidence,
+        warnings,
+        updatedAt: new Date(),
+        updatedBy: input.userId
+      })
+      .where(eq(expenses.id, expense.id));
+    return expense.id;
+  }
+
+  const txnType = expense.type as TxnType;
+  const { categoryId, ruled, hinted } = await resolveCategoryId(db, input.companyId, txnType, primaryRow.extract);
+  if (!categoryId) throw new BooksError("Add a category before receipts can be posted.");
+  const baseWarnings = extractionWarnings(primaryRow.extract, ruled, hinted).filter((warning) => !warning.startsWith("Grouped "));
+  if (parsed.length > 1) {
+    const pct = grouped ? Math.round(grouped.confidence * 100) : 100;
+    baseWarnings.push(`Grouped ${parsed.length} receipts onto one expense (${pct}% match).`);
+  }
+  const description = journalDescription(primaryRow.extract.merchant, primaryRow.extract.description) || primaryRow.extract.description;
+  const resolved = await resolvePosting(db, input.companyId, {
+    type: txnType,
+    settlementAccountId: expense.settlementAccountId,
+    categoryId,
+    txnDate: isIsoDate(primaryRow.extract.txnDate) ? primaryRow.extract.txnDate : expense.txnDate,
+    description,
+    amount: expense.amount
+  });
+  await db
+    .update(expenses)
+    .set({
+      categoryId,
+      txnDate: isIsoDate(primaryRow.extract.txnDate) ? primaryRow.extract.txnDate : expense.txnDate,
+      merchant: primaryRow.extract.merchant.slice(0, 200),
+      description: resolved.description,
+      paymentMethod,
+      aiConfidence: primaryRow.extract.confidence.toFixed(3),
+      extractionSource: primaryRow.extract.source,
+      warnings: baseWarnings,
+      groupConfidence: grouped ? grouped.confidence.toFixed(3) : null,
+      updatedBy: input.userId,
+      updatedAt: new Date()
+    })
+    .where(eq(expenses.id, expense.id));
+  await writeLines(db, {
+    companyId: input.companyId,
+    expenseId: expense.id,
+    date: isIsoDate(primaryRow.extract.txnDate) ? primaryRow.extract.txnDate : expense.txnDate,
+    description: resolved.description,
+    draft: resolved.draft
+  });
+  return expense.id;
+}
+
+export async function suggestExpensePair(
+  db: QueryClient,
+  input: { companyId: string; leftId: string; rightId: string; confidence: number; reason: string }
+) {
+  if (input.leftId === input.rightId) return;
+  const [expenseId, relatedExpenseId] = canonicalExpensePair(input.leftId, input.rightId);
+  await db
+    .insert(expenseRelations)
+    .values({
+      companyId: input.companyId,
+      expenseId,
+      relatedExpenseId,
+      confidence: input.confidence.toFixed(3),
+      reason: input.reason.slice(0, 500),
+      status: "suggested"
+    })
+    .onConflictDoNothing();
+}
+
+export async function mergeExpenses(
+  db: QueryClient,
+  input: { companyId: string; userId: string | null; targetId: string; sourceId: string; manual?: boolean }
+) {
+  if (input.targetId === input.sourceId) throw new BooksError("Choose a different expense to merge.");
+  const [target] = await db
+    .select()
+    .from(expenses)
+    .where(and(eq(expenses.id, input.targetId), eq(expenses.companyId, input.companyId)))
+    .limit(1);
+  const [source] = await db
+    .select()
+    .from(expenses)
+    .where(and(eq(expenses.id, input.sourceId), eq(expenses.companyId, input.companyId)))
+    .limit(1);
+  if (!target || !source) throw new BooksError("Expense not found.");
+  await db
+    .update(receipts)
+    .set({ expenseId: target.id, updatedAt: new Date() })
+    .where(and(eq(receipts.expenseId, source.id), eq(receipts.companyId, input.companyId)));
+  await db
+    .delete(expenseRelations)
+    .where(
+      and(
+        eq(expenseRelations.companyId, input.companyId),
+        or(eq(expenseRelations.expenseId, source.id), eq(expenseRelations.relatedExpenseId, source.id))
+      )
+    );
+  await db.delete(expenses).where(eq(expenses.id, source.id));
+  await syncExpenseWithReceipts(db, { companyId: input.companyId, userId: input.userId, expenseId: target.id });
+  const [current] = await db.select({ warnings: expenses.warnings }).from(expenses).where(eq(expenses.id, target.id)).limit(1);
+  const warnings = [...(Array.isArray(current?.warnings) ? current.warnings : [])];
+  if (source.amount !== target.amount) {
+    warnings.push(`Merged with an expense of ${source.amount}. The booked amount is still ${target.amount}.`);
+  }
+  if (input.manual !== false) warnings.push("You merged these receipts onto one expense.");
+  await db.update(expenses).set({ warnings, updatedAt: new Date(), updatedBy: input.userId }).where(eq(expenses.id, target.id));
+  await db.insert(auditEvents).values({
+    companyId: input.companyId,
+    actorId: input.userId,
+    entityType: "expense",
+    entityId: target.id,
+    action: "expense.merge",
+    detail: { sourceId: source.id, sourceAmount: source.amount, targetAmount: target.amount }
+  });
+  return target.id;
+}
+
+export async function splitReceiptFromExpense(
+  db: QueryClient,
+  input: { companyId: string; userId: string | null; expenseId: string; receiptId: string }
+) {
+  const [expense] = await db
+    .select()
+    .from(expenses)
+    .where(and(eq(expenses.id, input.expenseId), eq(expenses.companyId, input.companyId)))
+    .limit(1);
+  if (!expense) throw new BooksError("Expense not found.");
+  const attached = await db
+    .select()
+    .from(receipts)
+    .where(and(eq(receipts.expenseId, expense.id), eq(receipts.companyId, input.companyId)));
+  const receipt = attached.find((row) => row.id === input.receiptId);
+  if (!receipt) throw new BooksError("That receipt is not attached to this expense.");
+  if (attached.length < 2) throw new BooksError("This expense has only one receipt.");
+  await db.update(receipts).set({ expenseId: null, role: null, updatedAt: new Date() }).where(eq(receipts.id, receipt.id));
+  const extract = readExtract(receipt.rawExtract);
+  let createdId: string;
+  if (extract) {
+    createdId = await postExpenseFromReceipt(db, {
+      companyId: input.companyId,
+      userId: input.userId,
+      receiptId: receipt.id,
+      txnType: expense.type as TxnType,
+      settlementAccountId: receipt.settlementAccountId,
+      extract
+    });
+  } else {
+    const [created] = await db
+      .insert(expenses)
+      .values({
+        companyId: input.companyId,
+        type: expense.type,
+        settlementAccountId: expense.settlementAccountId,
+        categoryId: expense.categoryId,
+        txnDate: expense.txnDate,
+        merchant: expense.merchant,
+        description: expense.description,
+        amount: expense.amount,
+        currency: expense.currency,
+        paymentMethod: expense.paymentMethod,
+        extractionSource: "manual",
+        warnings: ["Split from another expense. Both amounts stay posted until you edit them."],
+        reviewStatus: "needs_review",
+        createdBy: input.userId,
+        updatedBy: input.userId
+      })
+      .returning();
+    const resolved = await resolvePosting(db, input.companyId, {
+      type: expense.type as TxnType,
+      settlementAccountId: expense.settlementAccountId,
+      categoryId: expense.categoryId,
+      txnDate: expense.txnDate,
+      description: expense.description,
+      amount: expense.amount
+    });
+    await writeLines(db, {
+      companyId: input.companyId,
+      expenseId: created.id,
+      date: expense.txnDate,
+      description: resolved.description,
+      draft: resolved.draft
+    });
+    await db.update(receipts).set({ expenseId: created.id, role: "primary", updatedAt: new Date() }).where(eq(receipts.id, receipt.id));
+    createdId = created.id;
+  }
+  await syncExpenseWithReceipts(db, { companyId: input.companyId, userId: input.userId, expenseId: expense.id });
+  const note = "A receipt was split onto its own expense. Both amounts stay posted until you edit them.";
+  for (const id of [expense.id, createdId]) {
+    const [row] = await db.select({ warnings: expenses.warnings }).from(expenses).where(eq(expenses.id, id)).limit(1);
+    const warnings = [...(Array.isArray(row?.warnings) ? row.warnings : [])];
+    if (!warnings.includes(note)) warnings.push(note);
+    await db.update(expenses).set({ warnings, updatedAt: new Date(), updatedBy: input.userId }).where(eq(expenses.id, id));
+  }
+  await db.insert(auditEvents).values({
+    companyId: input.companyId,
+    actorId: input.userId,
+    entityType: "expense",
+    entityId: expense.id,
+    action: "expense.split",
+    detail: { receiptId: receipt.id, createdId }
+  });
+  return createdId;
+}
+
+export async function dismissExpenseRelation(db: QueryClient, input: { companyId: string; relationId: string }) {
+  const [row] = await db
+    .update(expenseRelations)
+    .set({ status: "dismissed" })
+    .where(and(eq(expenseRelations.id, input.relationId), eq(expenseRelations.companyId, input.companyId)))
+    .returning({ id: expenseRelations.id });
+  if (!row) throw new BooksError("Suggestion not found.");
 }
 
 export async function createManualTransaction(
@@ -553,7 +860,7 @@ export async function createManualTransaction(
   const type = assertTxnType(input.type);
   const resolved = await resolvePosting(db, input.companyId, { ...input, type });
   const [created] = await db
-    .insert(transactions)
+    .insert(expenses)
     .values({
       companyId: input.companyId,
       type,
@@ -573,7 +880,7 @@ export async function createManualTransaction(
     .returning();
   await writeLines(db, {
     companyId: input.companyId,
-    transactionId: created.id,
+    expenseId: created.id,
     date: input.txnDate,
     description: resolved.description,
     draft: resolved.draft
@@ -581,9 +888,9 @@ export async function createManualTransaction(
   await db.insert(auditEvents).values({
     companyId: input.companyId,
     actorId: input.userId,
-    entityType: "transaction",
+    entityType: "expense",
     entityId: created.id,
-    action: "transaction.create",
+    action: "expense.create",
     detail: { amount: resolved.amount, type }
   });
   return created.id;
@@ -608,13 +915,13 @@ export async function updateTransaction(
   const type = assertTxnType(input.type);
   const [current] = await db
     .select()
-    .from(transactions)
-    .where(and(eq(transactions.id, input.id), eq(transactions.companyId, input.companyId)))
+    .from(expenses)
+    .where(and(eq(expenses.id, input.id), eq(expenses.companyId, input.companyId)))
     .limit(1);
-  if (!current) throw new BooksError("Transaction not found.");
+  if (!current) throw new BooksError("Expense not found.");
   const resolved = await resolvePosting(db, input.companyId, { ...input, type });
   await db
-    .update(transactions)
+    .update(expenses)
     .set({
       type,
       settlementAccountId: input.settlementAccountId,
@@ -627,10 +934,10 @@ export async function updateTransaction(
       updatedBy: input.userId,
       updatedAt: new Date()
     })
-    .where(eq(transactions.id, current.id));
+    .where(eq(expenses.id, current.id));
   await writeLines(db, {
     companyId: input.companyId,
-    transactionId: current.id,
+    expenseId: current.id,
     date: input.txnDate,
     description: resolved.description,
     draft: resolved.draft
@@ -638,9 +945,9 @@ export async function updateTransaction(
   await db.insert(auditEvents).values({
     companyId: input.companyId,
     actorId: input.userId,
-    entityType: "transaction",
+    entityType: "expense",
     entityId: current.id,
-    action: input.reviewStatus === "approved" ? "transaction.approve" : "transaction.update",
+    action: input.reviewStatus === "approved" ? "expense.approve" : "expense.update",
     detail: {
       before: { amount: current.amount, date: current.txnDate, categoryId: current.categoryId, type: current.type },
       after: { amount: resolved.amount, date: input.txnDate, categoryId: input.categoryId, type }
@@ -648,55 +955,67 @@ export async function updateTransaction(
   });
 }
 
-export async function listTransactions(db: QueryClient, companyId: string, type?: TxnType) {
-  const filters = [eq(transactions.companyId, companyId)];
-  if (type) filters.push(eq(transactions.type, type));
+const receiptCountSql = sql<number>`(select count(*)::int from ${receipts} where ${receipts.expenseId} = ${expenses.id})`;
+
+export async function listExpenses(db: QueryClient, companyId: string, type?: TxnType) {
+  const filters = [eq(expenses.companyId, companyId)];
+  if (type) filters.push(eq(expenses.type, type));
   return db
     .select({
-      id: transactions.id,
-      type: transactions.type,
-      txnDate: transactions.txnDate,
-      merchant: transactions.merchant,
-      description: transactions.description,
-      amount: transactions.amount,
-      reviewStatus: transactions.reviewStatus,
-      extractionSource: transactions.extractionSource,
+      id: expenses.id,
+      type: expenses.type,
+      txnDate: expenses.txnDate,
+      merchant: expenses.merchant,
+      description: expenses.description,
+      amount: expenses.amount,
+      reviewStatus: expenses.reviewStatus,
+      extractionSource: expenses.extractionSource,
+      paymentMethod: expenses.paymentMethod,
       categoryName: categories.name,
       accountName: accounts.name,
-      accountCode: accounts.code
+      accountCode: accounts.code,
+      receiptCount: receiptCountSql
     })
-    .from(transactions)
-    .innerJoin(categories, eq(transactions.categoryId, categories.id))
-    .innerJoin(accounts, eq(transactions.settlementAccountId, accounts.id))
+    .from(expenses)
+    .innerJoin(categories, eq(expenses.categoryId, categories.id))
+    .innerJoin(accounts, eq(expenses.settlementAccountId, accounts.id))
     .where(and(...filters))
-    .orderBy(desc(transactions.txnDate), desc(transactions.createdAt));
+    .orderBy(desc(expenses.txnDate), desc(expenses.createdAt));
 }
+
+export const listTransactions = listExpenses;
 
 export async function listReviewQueue(db: QueryClient, companyId: string) {
   return db
     .select({
-      id: transactions.id,
-      type: transactions.type,
-      txnDate: transactions.txnDate,
-      description: transactions.description,
-      amount: transactions.amount,
-      extractionSource: transactions.extractionSource,
-      aiConfidence: transactions.aiConfidence,
-      categoryName: categories.name
+      id: expenses.id,
+      type: expenses.type,
+      txnDate: expenses.txnDate,
+      description: expenses.description,
+      amount: expenses.amount,
+      extractionSource: expenses.extractionSource,
+      aiConfidence: expenses.aiConfidence,
+      categoryName: categories.name,
+      receiptCount: receiptCountSql
     })
-    .from(transactions)
-    .innerJoin(categories, eq(transactions.categoryId, categories.id))
-    .where(and(eq(transactions.companyId, companyId), eq(transactions.reviewStatus, "needs_review")))
-    .orderBy(asc(transactions.txnDate), asc(transactions.createdAt));
+    .from(expenses)
+    .innerJoin(categories, eq(expenses.categoryId, categories.id))
+    .where(and(eq(expenses.companyId, companyId), eq(expenses.reviewStatus, "needs_review")))
+    .orderBy(asc(expenses.txnDate), asc(expenses.createdAt));
 }
 
-export async function getTransaction(db: QueryClient, companyId: string, id: string) {
+export async function getExpense(db: QueryClient, companyId: string, id: string) {
   const [row] = await db
     .select()
-    .from(transactions)
-    .where(and(eq(transactions.id, id), eq(transactions.companyId, companyId)))
+    .from(expenses)
+    .where(and(eq(expenses.id, id), eq(expenses.companyId, companyId)))
     .limit(1);
   if (!row) return null;
+  const [category] = await db
+    .select({ name: categories.name })
+    .from(categories)
+    .where(eq(categories.id, row.categoryId))
+    .limit(1);
   const lines = await db
     .select({
       id: journalLines.id,
@@ -708,24 +1027,52 @@ export async function getTransaction(db: QueryClient, companyId: string, id: str
     })
     .from(journalLines)
     .innerJoin(accounts, eq(journalLines.accountId, accounts.id))
-    .where(eq(journalLines.transactionId, row.id))
+    .where(eq(journalLines.expenseId, row.id))
     .orderBy(asc(journalLines.sortOrder));
-  const document = row.documentId
-    ? (
-        await db
-          .select({
-            id: documents.id,
-            fileName: documents.fileName,
-            mimeType: documents.mimeType,
-            status: documents.status,
-            extractionSource: documents.extractionSource,
-            error: documents.error
-          })
-          .from(documents)
-          .where(and(eq(documents.id, row.documentId), eq(documents.companyId, companyId)))
-          .limit(1)
-      )[0] ?? null
-    : null;
+  const attached = await db
+    .select({
+      id: receipts.id,
+      fileName: receipts.fileName,
+      mimeType: receipts.mimeType,
+      status: receipts.status,
+      extractionSource: receipts.extractionSource,
+      error: receipts.error,
+      documentKind: receipts.documentKind,
+      role: receipts.role
+    })
+    .from(receipts)
+    .where(and(eq(receipts.expenseId, row.id), eq(receipts.companyId, companyId)))
+    .orderBy(asc(receipts.createdAt));
+  const relations = await db
+    .select({
+      id: expenseRelations.id,
+      expenseId: expenseRelations.expenseId,
+      relatedExpenseId: expenseRelations.relatedExpenseId,
+      confidence: expenseRelations.confidence,
+      reason: expenseRelations.reason
+    })
+    .from(expenseRelations)
+    .where(
+      and(
+        eq(expenseRelations.companyId, companyId),
+        eq(expenseRelations.status, "suggested"),
+        or(eq(expenseRelations.expenseId, row.id), eq(expenseRelations.relatedExpenseId, row.id))
+      )
+    );
+  const otherIds = relations.map((relation) => (relation.expenseId === row.id ? relation.relatedExpenseId : relation.expenseId));
+  const relatedRows = otherIds.length
+    ? await db
+        .select({
+          id: expenses.id,
+          description: expenses.description,
+          amount: expenses.amount,
+          txnDate: expenses.txnDate,
+          merchant: expenses.merchant
+        })
+        .from(expenses)
+        .where(and(eq(expenses.companyId, companyId), inArray(expenses.id, otherIds)))
+    : [];
+  const relatedById = new Map(relatedRows.map((item) => [item.id, item]));
   const history = await db
     .select({
       id: auditEvents.id,
@@ -738,15 +1085,28 @@ export async function getTransaction(db: QueryClient, companyId: string, id: str
     .orderBy(desc(auditEvents.createdAt))
     .limit(12);
   const [next] = await db
-    .select({ id: transactions.id })
-    .from(transactions)
-    .where(
-      and(eq(transactions.companyId, companyId), eq(transactions.reviewStatus, "needs_review"), ne(transactions.id, row.id))
-    )
-    .orderBy(asc(transactions.txnDate), asc(transactions.createdAt))
+    .select({ id: expenses.id })
+    .from(expenses)
+    .where(and(eq(expenses.companyId, companyId), eq(expenses.reviewStatus, "needs_review"), ne(expenses.id, row.id)))
+    .orderBy(asc(expenses.txnDate), asc(expenses.createdAt))
     .limit(1);
-  return { transaction: row, lines, document, history, nextReviewId: next?.id ?? null };
+  return {
+    expense: row,
+    categoryName: category?.name ?? "",
+    lines,
+    receipts: attached,
+    suggestions: relations.flatMap((relation) => {
+      const otherId = relation.expenseId === row.id ? relation.relatedExpenseId : relation.expenseId;
+      const other = relatedById.get(otherId);
+      if (!other) return [];
+      return [{ relationId: relation.id, confidence: relation.confidence, reason: relation.reason, expense: other }];
+    }),
+    history,
+    nextReviewId: next?.id ?? null
+  };
 }
+
+export const getTransaction = getExpense;
 
 export async function listJournal(
   db: QueryClient,
@@ -760,7 +1120,7 @@ export async function listJournal(
   return db
     .select({
       id: journalLines.id,
-      transactionId: journalLines.transactionId,
+      expenseId: journalLines.expenseId,
       date: journalLines.lineDate,
       docTypeCode: journalLines.docTypeCode,
       description: journalLines.description,
@@ -774,29 +1134,29 @@ export async function listJournal(
     .innerJoin(accounts, eq(journalLines.accountId, accounts.id))
     .leftJoin(categories, eq(journalLines.categoryId, categories.id))
     .where(and(...where))
-    .orderBy(asc(journalLines.lineDate), asc(journalLines.transactionId), asc(journalLines.sortOrder))
+    .orderBy(asc(journalLines.lineDate), asc(journalLines.expenseId), asc(journalLines.sortOrder))
     .limit(1000);
 }
 
 export async function dashboard(db: QueryClient, companyId: string, from: string, to: string) {
   const [review] = await db
     .select({ count: sql<number>`count(*)::int` })
-    .from(transactions)
-    .where(and(eq(transactions.companyId, companyId), eq(transactions.reviewStatus, "needs_review")));
+    .from(expenses)
+    .where(and(eq(expenses.companyId, companyId), eq(expenses.reviewStatus, "needs_review")));
   const [queued] = await db
     .select({ count: sql<number>`count(*)::int` })
-    .from(documents)
-    .where(and(eq(documents.companyId, companyId), sql`${documents.status} in ('queued', 'processing')`));
+    .from(receipts)
+    .where(and(eq(receipts.companyId, companyId), sql`${receipts.status} in ('queued', 'processing')`));
   const totals = await db
     .select({
-      type: transactions.type,
+      type: expenses.type,
       count: sql<number>`count(*)::int`,
-      total: sql<string>`coalesce(sum(${transactions.amount}), 0)::text`
+      total: sql<string>`coalesce(sum(${expenses.amount}), 0)::text`
     })
-    .from(transactions)
-    .where(and(eq(transactions.companyId, companyId), gte(transactions.txnDate, from), lte(transactions.txnDate, to)))
-    .groupBy(transactions.type);
-  const recent = await listTransactions(db, companyId);
+    .from(expenses)
+    .where(and(eq(expenses.companyId, companyId), gte(expenses.txnDate, from), lte(expenses.txnDate, to)))
+    .groupBy(expenses.type);
+  const recent = await listExpenses(db, companyId);
   return {
     reviewCount: review?.count ?? 0,
     queuedCount: queued?.count ?? 0,

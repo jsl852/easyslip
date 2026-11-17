@@ -7,7 +7,7 @@
 <div class="page-head">
   <div>
     <h1>Journal</h1>
-    <p class="sub">Each transaction is a debit and a credit. These lines are what the Excel pack copies onto the JL sheet.</p>
+    <p class="sub">Each expense is one debit and one credit, even when several receipts are attached. These lines are what the Excel pack copies onto the JL sheet.</p>
   </div>
 </div>
 
@@ -41,7 +41,7 @@
         <tr>
           <td>{formatIsoDate(line.date)}</td>
           <td>{line.docTypeCode}</td>
-          <td><a href={`/app/transactions/${line.transactionId}`}>{line.description}</a></td>
+          <td><a href={`/app/transactions/${line.expenseId}`}>{line.description}</a></td>
           <td>{line.accountCode} {line.accountName}</td>
           <td>{line.categoryName ?? ""}</td>
           <td class="num">{formatDecimal(line.debit)}</td>
