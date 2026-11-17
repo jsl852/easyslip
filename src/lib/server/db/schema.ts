@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   customType,
   date,
   index,
@@ -143,7 +144,8 @@ export const documents = pgTable(
     fileName: text("file_name").notNull(),
     mimeType: text("mime_type").notNull(),
     byteSize: integer("byte_size").notNull(),
-    fileData: bytea("file_data").notNull(),
+    fileData: bytea("file_data"),
+    storageKey: text("storage_key"),
     source: text("source").notNull().default("upload"),
     status: text("status").notNull().default("queued"),
     txnType: text("txn_type").notNull(),
@@ -159,7 +161,11 @@ export const documents = pgTable(
   },
   (table) => [
     index("documents_company_status_idx").on(table.companyId, table.status),
-    index("documents_company_created_idx").on(table.companyId, table.createdAt)
+    index("documents_company_created_idx").on(table.companyId, table.createdAt),
+    check(
+      "documents_file_stored_check",
+      sql`(${table.fileData} IS NOT NULL AND ${table.storageKey} IS NULL) OR (${table.fileData} IS NULL AND ${table.storageKey} IS NOT NULL)`
+    )
   ]
 );
 
@@ -272,10 +278,17 @@ export const reportJobs = pgTable(
     status: text("status").notNull(),
     fileName: text("file_name"),
     fileData: bytea("file_data"),
+    storageKey: text("storage_key"),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow()
   },
-  (table) => [index("report_jobs_company_idx").on(table.companyId, table.createdAt)]
+  (table) => [
+    index("report_jobs_company_idx").on(table.companyId, table.createdAt),
+    check(
+      "report_jobs_file_stored_check",
+      sql`${table.status} <> 'ready' OR ((${table.fileData} IS NOT NULL AND ${table.storageKey} IS NULL) OR (${table.fileData} IS NULL AND ${table.storageKey} IS NOT NULL))`
+    )
+  ]
 );
 
 export const auditEvents = pgTable(

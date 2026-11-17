@@ -37,6 +37,7 @@ Edit `.env`:
 - `AUTH_URL` — `http://localhost:5173`
 - `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` — from Google Cloud, with redirect URI `http://localhost:5173/auth/callback/google`
 - `XAI_API_KEY` — optional. Leave it empty to use the manual fallback.
+- `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` — optional. Leave all four unset locally so uploads stay in Postgres.
 
 Local password sign-in, off in any shared environment:
 
@@ -84,6 +85,10 @@ ORIGIN=http://127.0.0.1:4173 BODY_SIZE_LIMIT=80M PORT=4173 HOST=0.0.0.0 node bui
 | `XAI_API_KEY` | no | xAI key. Empty means the marked manual fallback |
 | `XAI_MODEL` | no | Defaults to `grok-4-fast` |
 | `XAI_API_BASE` | no | Defaults to `https://api.x.ai/v1` |
+| `AWS_REGION` | no | Region of the private receipt bucket. Set with the other three S3 variables, or leave all four unset |
+| `S3_BUCKET` | no | Private bucket for new receipt files and workbooks |
+| `AWS_ACCESS_KEY_ID` | no | IAM access key with put, get, and delete on `companies/*` in that bucket |
+| `AWS_SECRET_ACCESS_KEY` | no | Secret for that access key. Never commit it |
 | `AUTH_DEV_LOGIN` | no | `true` enables the local password form |
 | `DEV_LOGIN_PASSWORD` | with dev login | At least 8 characters. Do not set this on Render |
 | `HOST` | on Render | `0.0.0.0` |
@@ -97,11 +102,21 @@ Do not commit `.env` or real keys. `.env.example` has placeholders only.
 
 ## Render
 
-`render.yaml` describes a free web service and a free Postgres database in Oregon. It is not deployed by this repository. Free Postgres expires 30 days after creation, and a free web service sleeps after 15 minutes without traffic. Uploaded files and workbooks are stored in Postgres, because the web service disk is ephemeral.
+`render.yaml` describes a free web service and a free Postgres database in Oregon. It is not deployed by this repository. Free Postgres expires 30 days after creation, and a free web service sleeps after 15 minutes without traffic. The web service disk is ephemeral, so receipt files and workbooks are not stored on it. See [Stored files](#stored-files).
 
-On first Blueprint setup, fill in `AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and optionally `XAI_API_KEY`. `AUTH_SECRET` is generated. `DATABASE_URL` comes from the database. The start command runs `npm run db:migrate` before the app listens. Render's free plan does not support a pre-deploy command.
+On first Blueprint setup, fill in `AUTH_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, and optionally `XAI_API_KEY`. For private S3, also set `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY`. Leave those four unset to keep file bytes in Postgres. `AUTH_SECRET` is generated. `DATABASE_URL` comes from the database. The start command runs `npm run db:migrate` before the app listens. Render's free plan does not support a pre-deploy command.
 
 Set the Google redirect URI to `https://<your-service>.onrender.com/auth/callback/google`.
+
+## Stored files
+
+Receipt images, PDFs, and Excel workbooks are written either to a private S3 bucket or to Postgres. They are not written to the web service disk.
+
+When `AWS_REGION`, `S3_BUCKET`, `AWS_ACCESS_KEY_ID`, and `AWS_SECRET_ACCESS_KEY` are all set, a new upload or workbook is saved with a server-side `PutObject`. EasySlip does not set a public ACL and does not list the bucket. Preview and download stay on the signed-in routes `/app/documents/:id/file` and `/app/reports/:id/download`. Those routes read the object on the server and return the bytes. They do not redirect the browser to S3, and they do not hand out a bucket URL.
+
+Create the bucket with Block Public Access on, ACLs disabled, and default encryption on. Give the IAM user only `s3:PutObject`, `s3:GetObject`, and `s3:DeleteObject` on `arn:aws:s3:::<bucket>/companies/*`. `DeleteObject` is used to remove an object if the database row cannot be saved. Do not add a bucket policy that allows `Principal: "*"`.
+
+When the four variables are unset, new files are stored in Postgres. That is the local default. Set all four, or none. A partial set fails the next upload instead of quietly using the database. Files already stored in Postgres stay there and remain readable after S3 is turned on. The migration adds `storage_key` and lets `documents.file_data` be null when the bytes live in S3.
 
 ## Stack
 
