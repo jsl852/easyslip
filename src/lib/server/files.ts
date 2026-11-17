@@ -1,5 +1,6 @@
-export const MAX_FILE_BYTES = 8 * 1024 * 1024;
-export const MAX_BATCH = 20;
+import { MAX_BATCH, MAX_FILE_BYTES } from "$lib/uploads";
+
+export { MAX_BATCH, MAX_FILE_BYTES };
 
 const allowed = ["application/pdf", "image/png", "image/jpeg", "image/gif", "image/webp"] as const;
 export type AllowedMime = (typeof allowed)[number];

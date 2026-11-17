@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import type { TxnType } from "$lib/accounting/types";
 import { type QueryClient } from "./db/client";
-import { documents } from "./db/schema";
+import { documents, transactions } from "./db/schema";
 import { BooksError } from "./errors";
 import { cleanFileName, MAX_BATCH, MAX_FILE_BYTES, sniffMime } from "./files";
 import {
@@ -70,7 +70,7 @@ export async function saveBatch(
 }
 
 export async function listDocuments(db: QueryClient, companyId: string) {
-  return db
+  const rows = await db
     .select({
       id: documents.id,
       fileName: documents.fileName,
@@ -80,12 +80,21 @@ export async function listDocuments(db: QueryClient, companyId: string) {
       txnType: documents.txnType,
       extractionSource: documents.extractionSource,
       error: documents.error,
-      createdAt: documents.createdAt
+      createdAt: documents.createdAt,
+      transactionId: transactions.id
     })
     .from(documents)
+    .leftJoin(transactions, eq(transactions.documentId, documents.id))
     .where(eq(documents.companyId, companyId))
     .orderBy(desc(documents.createdAt))
-    .limit(40);
+    .limit(80);
+
+  const seen = new Map<string, (typeof rows)[number]>();
+  for (const row of rows) {
+    const current = seen.get(row.id);
+    if (!current || (!current.transactionId && row.transactionId)) seen.set(row.id, row);
+  }
+  return [...seen.values()].slice(0, 40);
 }
 
 export async function retryDocument(db: QueryClient, companyId: string, id: string) {

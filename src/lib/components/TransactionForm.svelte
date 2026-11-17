@@ -80,7 +80,7 @@
     <span>Description</span>
     <textarea name="description" required maxlength="500">{values.description}</textarea>
   </label>
-  <div class="actions">
+  <div class="actions" class:dock-actions={approve}>
     <button name="intent" value="save" disabled={pending}>{pending ? "Saving…" : approve ? "Save corrections" : "Post to the journal"}</button>
     {#if approve}
       <button class="stamp" name="intent" value="approve" disabled={pending}>Approve</button>

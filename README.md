@@ -4,7 +4,7 @@ EasySlip is a receipt-led accounting workspace for Hong Kong SMEs. You sign in, 
 
 This is an original v1. It follows the public behavior of the [247 AICFO HK demo](https://www.youtube.com/watch?v=Pzu6l8gZ4kU) (batch upload, human review, journal lines, formula workbook). It does not reuse that product's code or services.
 
-Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-company consolidation. Employee cash bands can be added as settlement accounts. A separate mobile claims app is not included.
+Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-company consolidation. Employee cash bands can be added as settlement accounts. A separate mobile claims app is not included. The same site can be installed on a phone.
 
 ## What you can do
 
@@ -100,6 +100,26 @@ ORIGIN=http://127.0.0.1:4173 BODY_SIZE_LIMIT=80M PORT=4173 HOST=0.0.0.0 node bui
 | `BODY_SIZE_LIMIT` | on Render | `80M`. Each file is still limited to 8 MB inside the app |
 
 Do not commit `.env` or real keys. `.env.example` has placeholders only.
+
+## On a phone
+
+Sign in, create the company, then take a receipt photo or choose one from the library. The queue button stays along the bottom of the screen. When reading finishes, open the preview, correct the line, and approve it.
+
+### Add to the Home Screen
+
+The production site is already served over HTTPS.
+
+iPhone, in Safari: open the site, tap Share, then Add to Home Screen. iOS does not offer an automatic install banner, so the Share sheet is the install path. The icon is labelled EasySlip and opens without the Safari toolbar.
+
+Android, in Chrome: open the site, then Install app, or use the browser menu and choose Add to Home Screen or Install. The installed app opens standalone.
+
+The icon opens `/?source=pwa`. A signed-in member with a company continues into the workspace. A signed-in member without a company continues to company setup. Anyone else stays on the site root.
+
+### What the service worker stores
+
+The service worker caches the app shell only: hashed JavaScript and CSS, the icons, the favicon, and `offline.html`. It does not cache receipt images, report downloads, workspace HTML, SvelteKit `__data` responses, or auth and sign-out responses. Those requests are network-only and use `cache: "no-store"`. If a private page cannot be loaded, EasySlip shows the offline page instead of a saved copy.
+
+The installed app still needs a connection to sign in, upload, and read a receipt. A flaky connection can reuse the saved shell files. Private data is never reused from cache. The path rules live in `src/service-worker.ts` and `src/lib/pwa/cache-policy.ts`.
 
 ## Render
 

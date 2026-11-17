@@ -21,16 +21,17 @@
   const outsideYear = $derived(txn.txnDate.slice(0, 4) !== hongKongToday().slice(0, 4));
 </script>
 
+<div class="review-page">
 <div class="page-head">
   <div>
     <h1>Review entry</h1>
-    <p class="sub">
+    <p class="status-line">
       <span class="pill {txn.extractionSource}">{source}</span>
       <span class="pill {txn.reviewStatus}">{txn.reviewStatus === "needs_review" ? "Needs review" : "Approved"}</span>
-      {#if txn.aiConfidence !== null} · confidence {Math.round(Number(txn.aiConfidence) * 100)}%{/if}
+      {#if txn.aiConfidence !== null}<span>confidence {Math.round(Number(txn.aiConfidence) * 100)}%</span>{/if}
     </p>
   </div>
-  {#if data.detail.nextReviewId}<a href={`/app/transactions/${data.detail.nextReviewId}`}>Next in review</a>{/if}
+  {#if data.detail.nextReviewId}<a class="button secondary" href={`/app/transactions/${data.detail.nextReviewId}`}>Next in review</a>{/if}
 </div>
 
 {#if form?.message}<p class="callout">{form.message}</p>{/if}
@@ -41,8 +42,8 @@
   <p class="callout">Document currency was {txn.originalCurrency}. The posted amount is the face amount, with no exchange conversion.</p>
 {/if}
 
-<div class="split">
-  <div class="stack">
+<div class="split review-entry">
+  <div class="stack review-form">
     {#if warnings.length}
       <div class="callout">
         <strong>Extraction notes</strong>
@@ -83,7 +84,7 @@
       </div>
     {/if}
   </div>
-  <aside class="stack">
+  <aside class="stack preview-pane">
     {#if data.detail.document}
       <div class="preview">
         {#if data.detail.document.mimeType === "application/pdf"}
@@ -92,9 +93,11 @@
           <img alt={data.detail.document.fileName} src={`/app/documents/${data.detail.document.id}/file`} />
         {/if}
       </div>
-      <p class="sub">{data.detail.document.fileName}</p>
+      <p class="file-name">{data.detail.document.fileName}</p>
+      <a class="button secondary" href={`/app/documents/${data.detail.document.id}/file`}>Open full receipt</a>
     {:else}
       <div class="card"><p>No source file. This entry was posted by hand.</p></div>
     {/if}
   </aside>
+</div>
 </div>

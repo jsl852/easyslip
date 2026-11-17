@@ -25,5 +25,6 @@
   <p class="note">
     EasySlip keeps working papers. It does not file profits tax, connect a bank feed, run payroll, or track inventory.
     If the model key is unset, uploads still land in the review queue for manual entry.
+    On a phone, add EasySlip to the Home Screen. Uploading a receipt opens the camera, and you can still choose a photo or PDF.
   </p>
 </main>
