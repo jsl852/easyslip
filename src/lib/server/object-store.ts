@@ -1,7 +1,14 @@
-import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+  type S3ClientConfig
+} from "@aws-sdk/client-s3";
 import { BooksError } from "./errors";
 import { asBuffer } from "./files";
 
+// AWS region names, and Cloudflare R2's region `auto`.
 const REGION = /^[a-z0-9-]{1,32}$/;
 const BUCKET = /^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -15,6 +22,7 @@ export type ObjectStoreConfig = {
   bucket: string;
   accessKeyId: string;
   secretAccessKey: string;
+  endpoint?: string;
 };
 
 export type ObjectStorage = {
@@ -27,6 +35,33 @@ type ObjectBody = { transformToByteArray(): Promise<Uint8Array> };
 type Send = (command: PutObjectCommand | GetObjectCommand | DeleteObjectCommand) => Promise<{ Body?: ObjectBody }>;
 
 const NAMES = ["AWS_REGION", "S3_BUCKET", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"] as const;
+
+function canonicalHttpsEndpoint(value: string): string {
+  if (value.length > 2048) throw new BooksError("S3_ENDPOINT must be an https URL.");
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new BooksError("S3_ENDPOINT must be an https URL.");
+  }
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash || !url.hostname) {
+    throw new BooksError("S3_ENDPOINT must be an https URL.");
+  }
+  const path = url.pathname.replace(/\/+$/, "");
+  return `${url.origin}${path}`;
+}
+
+function readEndpoint(env: NodeJS.ProcessEnv): string | undefined {
+  const primary = env.S3_ENDPOINT?.trim() ?? "";
+  const alias = env.AWS_ENDPOINT_URL?.trim() ?? "";
+  if (!primary && !alias) return undefined;
+  const chosen = primary ? canonicalHttpsEndpoint(primary) : "";
+  const fallback = alias ? canonicalHttpsEndpoint(alias) : "";
+  if (chosen && fallback && chosen !== fallback) {
+    throw new BooksError("S3_ENDPOINT and AWS_ENDPOINT_URL must match.");
+  }
+  return chosen || fallback;
+}
 
 export function readObjectStoreConfig(env: NodeJS.ProcessEnv = process.env): ObjectStoreConfig | null {
   const values = {
@@ -41,7 +76,8 @@ export function readObjectStoreConfig(env: NodeJS.ProcessEnv = process.env): Obj
   if (missing.length > 0) {
     throw new BooksError(`Object storage is incomplete. Also set ${missing.join(", ")}.`);
   }
-  if (!REGION.test(values.AWS_REGION)) throw new BooksError("AWS_REGION is not a valid region name.");
+  const region = values.AWS_REGION.toLowerCase() === "auto" ? "auto" : values.AWS_REGION;
+  if (!REGION.test(region)) throw new BooksError("AWS_REGION is not a valid region name.");
   if (!BUCKET.test(values.S3_BUCKET) || values.S3_BUCKET.includes("..")) {
     throw new BooksError("S3_BUCKET is not a valid bucket name.");
   }
@@ -51,11 +87,13 @@ export function readObjectStoreConfig(env: NodeJS.ProcessEnv = process.env): Obj
   if (/\s/.test(values.AWS_SECRET_ACCESS_KEY) || values.AWS_SECRET_ACCESS_KEY.length > 256) {
     throw new BooksError("AWS_SECRET_ACCESS_KEY is not valid.");
   }
+  const endpoint = readEndpoint(env);
   return {
-    region: values.AWS_REGION,
+    region,
     bucket: values.S3_BUCKET,
     accessKeyId: values.AWS_ACCESS_KEY_ID,
-    secretAccessKey: values.AWS_SECRET_ACCESS_KEY
+    secretAccessKey: values.AWS_SECRET_ACCESS_KEY,
+    ...(endpoint ? { endpoint } : {})
   };
 }
 
@@ -127,18 +165,28 @@ function userMessage(action: "stored" | "read" | "removed"): string {
   return "The stored file could not be removed.";
 }
 
+export function s3ClientOptions(config: ObjectStoreConfig): S3ClientConfig {
+  const options: S3ClientConfig = {
+    region: config.region,
+    credentials: {
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey
+    }
+  };
+  if (!config.endpoint) return options;
+  return {
+    ...options,
+    endpoint: config.endpoint,
+    forcePathStyle: true,
+    requestChecksumCalculation: "WHEN_REQUIRED",
+    responseChecksumValidation: "WHEN_REQUIRED"
+  };
+}
+
 export function createS3ObjectStorage(config: ObjectStoreConfig, send?: Send): ObjectStorage {
   const bucket = config.bucket;
   const secrets = [config.secretAccessKey, config.accessKeyId];
-  const client = send
-    ? null
-    : new S3Client({
-        region: config.region,
-        credentials: {
-          accessKeyId: config.accessKeyId,
-          secretAccessKey: config.secretAccessKey
-        }
-      });
+  const client = send ? null : new S3Client(s3ClientOptions(config));
   const dispatch: Send = send ?? ((command) => client!.send(command) as Promise<{ Body?: ObjectBody }>);
 
   return {
@@ -195,7 +243,7 @@ export function objectStorage(env: NodeJS.ProcessEnv = process.env): ObjectStora
     cached = null;
     return null;
   }
-  const signature = `${config.region}\0${config.bucket}\0${config.accessKeyId}\0${config.secretAccessKey}`;
+  const signature = `${config.region}\0${config.bucket}\0${config.accessKeyId}\0${config.secretAccessKey}\0${config.endpoint ?? ""}`;
   if (cached?.signature === signature) return cached.storage;
   const storage = createS3ObjectStorage(config);
   cached = { signature, storage };
