@@ -215,6 +215,8 @@ th { font-size: 0.75rem; letter-spacing: 0.04em; text-transform: uppercase; colo
 .pill.review, .pill.queued, .pill.processing { background: var(--amber-soft); color: var(--amber); border-color: #ead7ae; }
 .pill.approved, .pill.extracted, .pill.ready, .pill.xai { background: var(--good-soft); color: var(--good); border-color: #cfe4d6; }
 .pill.failed, .pill.stub { background: var(--stamp-soft); color: var(--stamp); border-color: #efd0cd; }
+.pill.split { background: var(--teal-soft); color: var(--teal-deep); border-color: #b7d6d2; }
+.pill.needs_split { background: var(--amber-soft); color: var(--amber); border-color: #ead7ae; }
 .pill.manual { background: var(--teal-soft); color: var(--teal-deep); }
 
 .callout { border: 1px solid var(--line); background: var(--amber-soft); padding: 0.75rem 0.85rem; }

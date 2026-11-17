@@ -11,7 +11,7 @@ Out of scope: profits-tax filing, bank feeds, payroll, inventory, and multi-comp
 1. Sign in with Google. A local development sign-in is available only when you turn it on.
 2. Create one company. EasySlip seeds a Hong Kong chart of accounts, categories, and a few starter keyword rules.
 3. Upload up to 20 PDFs or images at a time, marked as an expense, purchase, or sale, against a bank, cash, card, or staff cash band.
-4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
+4. Wait for extraction. With `XAI_API_KEY` set, EasySlip calls xAI's OpenAI-compatible API. A photo that shows more than one physical slip is separated first, and each slip becomes its own document. If the edges are not clear enough to crop, the original photo stays in the list and says how many slips were found, instead of merging them into one entry. Without a key, or if the call fails, the file is marked **AI fallback** and waits for manual entry. A file named like `2024-03-02_cafe_86.50.jpg` fills the date, merchant, and amount from the name only, and says so.
 5. Correct the date, amount, category, and settlement account. Saving rewrites the journal lines. Approving removes the row from the review queue.
 6. Maintain the chart, categories, keyword rules, and opening balances.
 7. Preview a period and download an Excel workbook. `JL` holds values. Account sheets, `SJ` / `PJ` / `EJ`, `TB`, `BS`, and `PL` use formulas. Yellow opening cells on `TB` are editable so a migrated balance can be adjusted in the sheet. Documents outside the period stay in the database and are left out of the file.
@@ -103,7 +103,7 @@ Do not commit `.env` or real keys. `.env.example` has placeholders only.
 
 ## On a phone
 
-Sign in, create the company, then take a receipt photo or choose one from the library. The queue button stays along the bottom of the screen. When reading finishes, open the preview, correct the line, and approve it.
+Sign in, create the company, then take a receipt photo or choose one from the library. The queue button stays along the bottom of the screen. A picture of two slips side by side becomes two receipts, and each one can be previewed. When reading finishes, open the preview, correct the line, and approve it.
 
 ### Add to the Home Screen
 

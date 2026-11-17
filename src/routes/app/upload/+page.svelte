@@ -29,12 +29,20 @@
     return () => clearInterval(timer);
   });
 
-  function statusLabel(status: string) {
-    if (status === "queued") return "Queued";
-    if (status === "processing") return "Reading";
-    if (status === "extracted") return "Ready";
-    if (status === "failed") return "Failed";
-    return status;
+  function statusLabel(document: { status: string; receiptCount: number | null }) {
+    if ((document.status === "split" || document.status === "needs_split") && document.receiptCount) {
+      return `${document.receiptCount} receipts found`;
+    }
+    if (document.status === "queued") return "Queued";
+    if (document.status === "processing") return "Reading";
+    if (document.status === "extracted") return "Ready";
+    if (document.status === "failed") return "Failed";
+    return document.status;
+  }
+
+  function statusDetail(document: { status: string; error: string | null }) {
+    if (document.status === "split") return "Each slip is listed on its own. Open each one to review it.";
+    return document.error;
   }
 
   function sourceLabel(source: string | null) {
@@ -74,7 +82,7 @@
   <div class="page-head">
     <div>
       <h1>Upload</h1>
-      <p class="sub">Photograph a receipt, or choose one from the library. Reading continues if you leave this page.</p>
+      <p class="sub">Photograph a receipt, or choose one from the library. A photo with more than one slip is split, and each slip is read on its own. Reading continues if you leave this page.</p>
     </div>
   </div>
 
@@ -177,18 +185,19 @@
         {#each data.documents as document (document.id)}
           <article class="doc-card">
             <div class="doc-card-top">
-              <span class="pill {document.status}">{statusLabel(document.status)}</span>
+              <span class="pill {document.status}">{statusLabel(document)}</span>
               {#if document.extractionSource}<span class="pill {document.extractionSource}">{sourceLabel(document.extractionSource)}</span>{/if}
               <span class="sub">{formatIsoDate(document.createdAt.toISOString().slice(0, 10))} · {document.txnType}</span>
             </div>
             <div class="file-name">{document.fileName}</div>
-            {#if document.error}<p class="sub">{document.error}</p>{/if}
+            {#if document.parentFileName}<p class="sub">From {document.parentFileName}</p>{/if}
+            {#if statusDetail(document)}<p class="sub">{statusDetail(document)}</p>{/if}
             <div class="actions">
               {#if document.status === "extracted" && document.transactionId}
                 <a class="button" href={`/app/transactions/${document.transactionId}`}>Preview</a>
               {/if}
               <a class="button secondary" href={`/app/documents/${document.id}/file`}>Receipt</a>
-              {#if document.status === "failed"}
+              {#if document.status === "failed" || document.status === "needs_split"}
                 <form method="POST" action="?/retry">
                   <input type="hidden" name="id" value={document.id} />
                   <button class="secondary" type="submit">Retry</button>
@@ -208,15 +217,16 @@
                 <td><a href={`/app/documents/${document.id}/file`}>{document.fileName}</a></td>
                 <td>{document.txnType}</td>
                 <td>
-                  <span class="pill {document.status}">{statusLabel(document.status)}</span>
+                  <span class="pill {document.status}">{statusLabel(document)}</span>
                   {#if document.extractionSource}<span class="pill {document.extractionSource}">{sourceLabel(document.extractionSource)}</span>{/if}
-                  {#if document.error}<div class="sub">{document.error}</div>{/if}
+                  {#if document.parentFileName}<div class="sub">From {document.parentFileName}</div>{/if}
+                  {#if statusDetail(document)}<div class="sub">{statusDetail(document)}</div>{/if}
                 </td>
                 <td>
                   {#if document.status === "extracted" && document.transactionId}
                     <a href={`/app/transactions/${document.transactionId}`}>Preview</a>
                   {/if}
-                  {#if document.status === "failed"}
+                  {#if document.status === "failed" || document.status === "needs_split"}
                     <form method="POST" action="?/retry">
                       <input type="hidden" name="id" value={document.id} />
                       <button class="secondary" type="submit">Retry</button>

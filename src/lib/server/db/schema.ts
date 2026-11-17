@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   customType,
@@ -141,6 +142,7 @@ export const documents = pgTable(
       .references(() => companies.id, { onDelete: "cascade" }),
     uploadedBy: text("uploaded_by").references(() => users.id, { onDelete: "set null" }),
     batchId: text("batch_id").notNull(),
+    parentDocumentId: text("parent_document_id").references((): AnyPgColumn => documents.id, { onDelete: "set null" }),
     fileName: text("file_name").notNull(),
     mimeType: text("mime_type").notNull(),
     byteSize: integer("byte_size").notNull(),
@@ -162,6 +164,7 @@ export const documents = pgTable(
   (table) => [
     index("documents_company_status_idx").on(table.companyId, table.status),
     index("documents_company_created_idx").on(table.companyId, table.createdAt),
+    index("documents_parent_idx").on(table.parentDocumentId),
     check(
       "documents_file_stored_check",
       sql`(${table.fileData} IS NOT NULL AND ${table.storageKey} IS NULL) OR (${table.fileData} IS NULL AND ${table.storageKey} IS NOT NULL)`
